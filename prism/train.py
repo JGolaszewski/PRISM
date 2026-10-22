@@ -16,6 +16,7 @@ from prism.model import (
     DEFAULT_POLYNOMIAL_DEGREE,
     NDFPolynomialVAE,
     create_polynomial_basis,
+    create_grid_zernike_basis,
     select_device,
 )
 
@@ -48,10 +49,19 @@ def _losses(
     basis: torch.Tensor,
     beta: float,
     peak_weight: float,
+    mse_weight: float,
+    coefficient_penalty: float,
+    coefficient_degree_weights: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    ndf_recon, _, mu, logvar = model(batch, basis)
+    ndf_recon, coefficients, mu, logvar = model(batch, basis)
     targets = batch.reshape(batch.shape[0], -1)
     recon_loss = compute_reconstruction_loss(ndf_recon, targets, peak_weight)
+    if mse_weight:
+        recon_loss = recon_loss + mse_weight * torch.mean((ndf_recon - targets).square())
+    if coefficient_penalty:
+        recon_loss = recon_loss + coefficient_penalty * torch.mean(
+            coefficients.square() * coefficient_degree_weights
+        )
     mu, logvar = mu.float(), logvar.float()
     kl_loss = -0.5 * torch.mean(1.0 + logvar - mu.square() - logvar.exp())
     return recon_loss + beta * kl_loss, recon_loss, kl_loss
@@ -66,6 +76,9 @@ def _run_epoch(
     device: torch.device,
     beta: float,
     peak_weight: float,
+    mse_weight: float,
+    coefficient_penalty: float,
+    coefficient_degree_weights: torch.Tensor,
     optimizer: torch.optim.Optimizer | None,
     epoch: int,
     epochs: int,
@@ -97,7 +110,14 @@ def _run_epoch(
                 enabled=use_amp,
             ):
                 total_loss, recon_loss, kl_loss = _losses(
-                    model, batch, basis, beta, peak_weight
+                    model,
+                    batch,
+                    basis,
+                    beta,
+                    peak_weight,
+                    mse_weight,
+                    coefficient_penalty,
+                    coefficient_degree_weights,
                 )
             if training:
                 total_loss.backward()
@@ -126,6 +146,7 @@ def _checkpoint_state(
     beta: float,
     polynomial_degree: int,
     peak_weight: float,
+    basis_type: str,
 ) -> dict[str, Any]:
     return {
         "epoch": epoch,
@@ -137,9 +158,10 @@ def _checkpoint_state(
         "best_validation_loss": best_validation_loss,
         "grid_size": GRID_SIZE,
         "polynomial_degree": polynomial_degree,
-        "basis_type": "complete_monomial",
+        "basis_type": basis_type,
         "latent_dim": latent_dim,
         "num_poly_terms": model.num_poly_terms,
+        "positive_coefficients": model.positive_coefficients,
         "beta": beta,
         "peak_weight": peak_weight,
     }
@@ -165,6 +187,12 @@ def train_ndf_vae(
     peak_weight: float = DEFAULT_PEAK_WEIGHT,
     validation_fraction: float = DEFAULT_VALIDATION_FRACTION,
     seed: int | None = None,
+    basis_type: str = "zernike",
+    scheduler: str = "none",
+    beta_schedule: str = "fixed",
+    beta_warmup_epochs: int = 10,
+    mse_weight: float = 0.0,
+    coefficient_penalty: float = 0.0,
 ) -> NDFPolynomialVAE:
     if epochs < 1:
         raise ValueError("epochs must be at least 1")
@@ -176,6 +204,18 @@ def train_ndf_vae(
         raise ValueError("save_freq must be at least 1")
     if polynomial_degree not in (4, 6, 8):
         raise ValueError("polynomial_degree must be one of 4, 6, or 8")
+    if basis_type not in ("monomial", "zernike"):
+        raise ValueError("basis_type must be 'monomial' or 'zernike'")
+    if scheduler not in ("none", "cosine", "plateau"):
+        raise ValueError("scheduler must be 'none', 'cosine', or 'plateau'")
+    if beta_schedule not in ("fixed", "linear"):
+        raise ValueError("beta_schedule must be 'fixed' or 'linear'")
+    if beta_warmup_epochs < 1:
+        raise ValueError("beta_warmup_epochs must be at least 1")
+    if mse_weight < 0.0 or not math.isfinite(mse_weight):
+        raise ValueError("mse_weight must be finite and nonnegative")
+    if coefficient_penalty < 0.0 or not math.isfinite(coefficient_penalty):
+        raise ValueError("coefficient_penalty must be finite and nonnegative")
     if peak_weight < 0.0 or not math.isfinite(peak_weight):
         raise ValueError("peak_weight must be finite and nonnegative")
     if not 0.0 <= validation_fraction < 1.0:
@@ -221,17 +261,42 @@ def train_ndf_vae(
     if validation_count:
         print(f"Validation set: {validation_count} samples")
 
-    basis = create_polynomial_basis(
-        grid_size=GRID_SIZE, degree=polynomial_degree
+    # Construct once before epoch/batch loops and retain on the selected device.
+    basis = (
+        create_grid_zernike_basis(GRID_SIZE, polynomial_degree)
+        if basis_type == "zernike"
+        else create_polynomial_basis(grid_size=GRID_SIZE, degree=polynomial_degree)
     ).to(device)
+    coefficient_degree_weights = torch.tensor(
+        [
+            (degree / max(polynomial_degree, 1)) ** 4
+            for degree in range(polynomial_degree + 1)
+            for _ in range(degree + 1)
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
     model = NDFPolynomialVAE(
         input_grid_size=GRID_SIZE,
         num_poly_terms=basis.shape[0],
         latent_dim=latent_dim,
+        # Zernike polynomials are signed. Their coefficients must also be
+        # signed to allow cancellation; nonnegativity is enforced after basis
+        # reconstruction in NDFPolynomialVAE.forward.
+        positive_coefficients=False,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=learning_rate, fused=device.type == "cuda"
     )
+    lr_scheduler = None
+    if scheduler == "cosine":
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs, eta_min=learning_rate * 0.01
+        )
+    elif scheduler == "plateau":
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=8, min_lr=learning_rate * 0.01
+        )
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     train_history: list[dict[str, float]] = []
@@ -239,6 +304,9 @@ def train_ndf_vae(
     best_validation_loss = float("inf")
 
     for epoch in range(1, epochs + 1):
+        current_beta = beta
+        if beta_schedule == "linear":
+            current_beta *= min(1.0, epoch / beta_warmup_epochs)
         train_metrics = _run_epoch(
             model,
             samples,
@@ -246,8 +314,11 @@ def train_ndf_vae(
             batch_size,
             basis,
             device,
-            beta,
+            current_beta,
             peak_weight,
+            mse_weight,
+            coefficient_penalty,
+            coefficient_degree_weights,
             optimizer,
             epoch,
             epochs,
@@ -261,8 +332,11 @@ def train_ndf_vae(
                 batch_size,
                 basis,
                 device,
-                beta,
+                current_beta,
                 peak_weight,
+                mse_weight,
+                coefficient_penalty,
+                coefficient_degree_weights,
                 None,
                 epoch,
                 epochs,
@@ -289,7 +363,15 @@ def train_ndf_vae(
             beta,
             polynomial_degree,
             peak_weight,
+            basis_type,
         )
+        state["learning_rate"] = learning_rate
+        state["scheduler"] = scheduler
+        state["beta_schedule"] = beta_schedule
+        state["beta_warmup_epochs"] = beta_warmup_epochs
+        state["effective_beta"] = current_beta
+        state["mse_weight"] = mse_weight
+        state["coefficient_penalty"] = coefficient_penalty
         current_validation_loss = validation_metrics["total"]
         if current_validation_loss < best_validation_loss:
             best_validation_loss = current_validation_loss
@@ -301,6 +383,11 @@ def train_ndf_vae(
             _save_checkpoint(
                 checkpoint_dir / f"checkpoint_epoch_{epoch:02d}.pt", state
             )
+        if lr_scheduler is not None:
+            if scheduler == "plateau":
+                lr_scheduler.step(current_validation_loss)
+            else:
+                lr_scheduler.step()
 
     return model
 
@@ -319,11 +406,17 @@ def main() -> int:
         "--poly-degree", type=int, choices=(4, 6, 8),
         default=DEFAULT_POLYNOMIAL_DEGREE,
     )
+    parser.add_argument("--basis-type", choices=("monomial", "zernike"), default="zernike")
     parser.add_argument("--peak-weight", type=float, default=DEFAULT_PEAK_WEIGHT)
     parser.add_argument(
         "--validation-fraction", type=float, default=DEFAULT_VALIDATION_FRACTION
     )
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--scheduler", choices=("none", "cosine", "plateau"), default="none")
+    parser.add_argument("--beta-schedule", choices=("fixed", "linear"), default="fixed")
+    parser.add_argument("--beta-warmup-epochs", type=int, default=10)
+    parser.add_argument("--mse-weight", type=float, default=0.0)
+    parser.add_argument("--coefficient-penalty", type=float, default=0.0)
     args = parser.parse_args()
     try:
         train_ndf_vae(
@@ -339,6 +432,12 @@ def main() -> int:
             peak_weight=args.peak_weight,
             validation_fraction=args.validation_fraction,
             seed=args.seed,
+            basis_type=args.basis_type,
+            scheduler=args.scheduler,
+            beta_schedule=args.beta_schedule,
+            beta_warmup_epochs=args.beta_warmup_epochs,
+            mse_weight=args.mse_weight,
+            coefficient_penalty=args.coefficient_penalty,
         )
     except Exception as exc:
         parser.exit(1, f"Training failed: {exc}\n")

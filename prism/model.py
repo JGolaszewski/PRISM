@@ -13,6 +13,48 @@ DEFAULT_POLYNOMIAL_DEGREE = 8
 DEFAULT_POLYNOMIAL_TERMS = (DEFAULT_POLYNOMIAL_DEGREE + 1) * (DEFAULT_POLYNOMIAL_DEGREE + 2) // 2
 
 
+def get_num_zernike_terms(max_degree: int) -> int:
+    if max_degree < 0:
+        raise ValueError("max_degree must be nonnegative")
+    return (max_degree + 1) * (max_degree + 2) // 2
+
+
+def create_zernike_basis(
+    h_x: torch.Tensor, h_y: torch.Tensor, max_degree: int = 8
+) -> torch.Tensor:
+    """Return canonical real Zernike terms as [Num_Points, K]."""
+    if max_degree < 0:
+        raise ValueError("max_degree must be nonnegative")
+    if h_x.shape != h_y.shape or h_x.ndim not in (1, 2):
+        raise ValueError("h_x and h_y must have matching 1D or 2D shapes")
+    r = torch.sqrt(h_x.square() + h_y.square())
+    phi = torch.atan2(h_y, h_x)
+    terms = []
+    for n in range(max_degree + 1):
+        for m in range(-n, n + 1, 2):
+            absolute_m = abs(m)
+            radial = torch.zeros_like(r)
+            for k in range((n - absolute_m) // 2 + 1):
+                coefficient = ((-1) ** k * math.factorial(n - k)) / (
+                    math.factorial(k)
+                    * math.factorial((n + absolute_m) // 2 - k)
+                    * math.factorial((n - absolute_m) // 2 - k)
+                )
+                radial = radial + coefficient * r.pow(n - 2 * k)
+            angular = torch.cos(absolute_m * phi) if m >= 0 else torch.sin(absolute_m * phi)
+            term = radial * angular
+            terms.append(torch.where(r <= 1.0, term, torch.zeros_like(term)).reshape(-1))
+    return torch.stack(terms, dim=1)
+
+
+def create_grid_zernike_basis(
+    grid_size: int = DEFAULT_GRID_SIZE, max_degree: int = DEFAULT_POLYNOMIAL_DEGREE
+) -> torch.Tensor:
+    coords = torch.linspace(-1.0, 1.0, grid_size, dtype=torch.float32)
+    hx, hy = torch.meshgrid(coords, coords, indexing="xy")
+    return create_zernike_basis(hx, hy, max_degree).T.contiguous()
+
+
 def create_polynomial_basis(
     grid_size: int = DEFAULT_GRID_SIZE,
     degree: int = DEFAULT_POLYNOMIAL_DEGREE,
@@ -135,7 +177,10 @@ class NDFPolynomialVAE(nn.Module):
         x: torch.Tensor,
         poly_basis: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        if poly_basis.shape != (self.num_poly_terms, self.input_dim):
+        if poly_basis.shape not in (
+            (self.num_poly_terms, self.input_dim),
+            (self.input_dim, self.num_poly_terms),
+        ):
             raise ValueError(
                 "poly_basis must have shape "
                 f"({self.num_poly_terms}, {self.input_dim}), got {tuple(poly_basis.shape)}"
@@ -144,9 +189,8 @@ class NDFPolynomialVAE(nn.Module):
         latent = self.reparameterize(mu, logvar) if self.training else mu
         coeffs = self.decoder(latent)
         # Basis layout is [K, N], so [B, K] @ [K, N] -> [B, N].
-        ndf_recon = torch.matmul(coeffs, poly_basis)
-        if not self.positive_coefficients:
-            ndf_recon = torch.relu(ndf_recon)
+        basis_kn = poly_basis if poly_basis.shape[0] == self.num_poly_terms else poly_basis.T
+        ndf_recon = torch.relu(torch.matmul(coeffs, basis_kn))
         return ndf_recon, coeffs, mu, logvar
 
 
