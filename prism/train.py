@@ -43,6 +43,31 @@ def compute_reconstruction_loss(
     return torch.mean(weights * torch.abs(torch.log1p(ndf_recon) - torch.log1p(target)))
 
 
+def compute_gradient_matching_loss(
+    ndf_recon: torch.Tensor, target: torch.Tensor, grid_size: int = GRID_SIZE
+) -> torch.Tensor:
+    """Match adjacent log-NDF changes in both grid directions.
+
+    This term penalizes ringing in the predicted profile while preserving
+    target edges: it compares reconstruction gradients with target gradients
+    instead of smoothing the prediction toward a flat field.
+    """
+    if ndf_recon.shape != target.shape:
+        raise ValueError("ndf_recon and target must have matching shapes")
+    if ndf_recon.shape[-1] != grid_size * grid_size:
+        raise ValueError(f"expected flattened {grid_size}x{grid_size} grids")
+    prediction = torch.log1p(ndf_recon.float().reshape(-1, grid_size, grid_size))
+    reference = torch.log1p(target.float().reshape(-1, grid_size, grid_size))
+    prediction_dx = prediction[..., :, 1:] - prediction[..., :, :-1]
+    reference_dx = reference[..., :, 1:] - reference[..., :, :-1]
+    prediction_dy = prediction[..., 1:, :] - prediction[..., :-1, :]
+    reference_dy = reference[..., 1:, :] - reference[..., :-1, :]
+    return 0.5 * (
+        torch.mean(torch.abs(prediction_dx - reference_dx))
+        + torch.mean(torch.abs(prediction_dy - reference_dy))
+    )
+
+
 def _losses(
     model: NDFPolynomialVAE,
     batch: torch.Tensor,
@@ -52,6 +77,7 @@ def _losses(
     mse_weight: float,
     coefficient_penalty: float,
     coefficient_degree_weights: torch.Tensor,
+    gradient_weight: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     ndf_recon, coefficients, mu, logvar = model(batch, basis)
     targets = batch.reshape(batch.shape[0], -1)
@@ -61,6 +87,10 @@ def _losses(
     if coefficient_penalty:
         recon_loss = recon_loss + coefficient_penalty * torch.mean(
             coefficients.square() * coefficient_degree_weights
+        )
+    if gradient_weight:
+        recon_loss = recon_loss + gradient_weight * compute_gradient_matching_loss(
+            ndf_recon, targets
         )
     mu, logvar = mu.float(), logvar.float()
     kl_loss = -0.5 * torch.mean(1.0 + logvar - mu.square() - logvar.exp())
@@ -79,6 +109,7 @@ def _run_epoch(
     mse_weight: float,
     coefficient_penalty: float,
     coefficient_degree_weights: torch.Tensor,
+    gradient_weight: float,
     optimizer: torch.optim.Optimizer | None,
     epoch: int,
     epochs: int,
@@ -118,10 +149,12 @@ def _run_epoch(
                     mse_weight,
                     coefficient_penalty,
                     coefficient_degree_weights,
+                    gradient_weight,
                 )
             if training:
                 total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                gradient_clip = 1.0 if peak_weight > 30.0 else 5.0
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip)
                 optimizer.step()
 
             current_size = batch.shape[0]
@@ -193,6 +226,7 @@ def train_ndf_vae(
     beta_warmup_epochs: int = 10,
     mse_weight: float = 0.0,
     coefficient_penalty: float = 0.0,
+    gradient_weight: float = 0.0,
 ) -> NDFPolynomialVAE:
     if epochs < 1:
         raise ValueError("epochs must be at least 1")
@@ -216,6 +250,8 @@ def train_ndf_vae(
         raise ValueError("mse_weight must be finite and nonnegative")
     if coefficient_penalty < 0.0 or not math.isfinite(coefficient_penalty):
         raise ValueError("coefficient_penalty must be finite and nonnegative")
+    if gradient_weight < 0.0 or not math.isfinite(gradient_weight):
+        raise ValueError("gradient_weight must be finite and nonnegative")
     if peak_weight < 0.0 or not math.isfinite(peak_weight):
         raise ValueError("peak_weight must be finite and nonnegative")
     if not 0.0 <= validation_fraction < 1.0:
@@ -319,6 +355,7 @@ def train_ndf_vae(
             mse_weight,
             coefficient_penalty,
             coefficient_degree_weights,
+            gradient_weight,
             optimizer,
             epoch,
             epochs,
@@ -337,6 +374,7 @@ def train_ndf_vae(
                 mse_weight,
                 coefficient_penalty,
                 coefficient_degree_weights,
+                gradient_weight,
                 None,
                 epoch,
                 epochs,
@@ -372,6 +410,7 @@ def train_ndf_vae(
         state["effective_beta"] = current_beta
         state["mse_weight"] = mse_weight
         state["coefficient_penalty"] = coefficient_penalty
+        state["gradient_weight"] = gradient_weight
         current_validation_loss = validation_metrics["total"]
         if current_validation_loss < best_validation_loss:
             best_validation_loss = current_validation_loss
@@ -417,6 +456,10 @@ def main() -> int:
     parser.add_argument("--beta-warmup-epochs", type=int, default=10)
     parser.add_argument("--mse-weight", type=float, default=0.0)
     parser.add_argument("--coefficient-penalty", type=float, default=0.0)
+    parser.add_argument(
+        "--gradient-weight", type=float, default=0.0,
+        help="Weight for matching adjacent log-NDF gradients in x and y",
+    )
     args = parser.parse_args()
     try:
         train_ndf_vae(
@@ -438,6 +481,7 @@ def main() -> int:
             beta_warmup_epochs=args.beta_warmup_epochs,
             mse_weight=args.mse_weight,
             coefficient_penalty=args.coefficient_penalty,
+            gradient_weight=args.gradient_weight,
         )
     except Exception as exc:
         parser.exit(1, f"Training failed: {exc}\n")
