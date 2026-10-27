@@ -1,4 +1,4 @@
-"""Download the complete MERL and RGL BRDF datasets into dataset/raw/."""
+"""Download supported MERL, RGL, DTU/Nielsen, Ngan, and urban BRDF data."""
 
 from __future__ import annotations
 
@@ -16,6 +16,17 @@ RAW_DIR = REPO_ROOT / "dataset" / "raw"
 MERL_INDEX = "https://people.csail.mit.edu/wojciech/BRDFDatabase/brdfs/"
 MERL_ROOT = "https://people.csail.mit.edu/wojciech/BRDFDatabase/"
 RGL_CATALOG = "https://rgl.epfl.ch/materials"
+DTU_NIELSEN_ROOT = "https://brdf.compute.dtu.dk/data/"
+DTU_NIELSEN_FILES = (
+    "bindercover", "bluebook", "greencloth", "notebook",
+    "yellowpaper", "cardboard", "glossyredpaper", "paintedmetal",
+)
+NGAN_ROOT = "https://people.csail.mit.edu/addy/research/brdf/"
+NGAN_FILES = ("brushed_alum", "yellow_satin", "purple_satin", "red_velvet")
+URBAN_BRDF_URL = (
+    "https://entrepot.recherche.data.gouv.fr/api/access/datafile/:persistentId/"
+    "?persistentId=doi:10.57745/KQDDMD"
+)
 USER_AGENT = "PRISM-workspace-dataset-downloader/1.0"
 
 
@@ -107,11 +118,54 @@ def download_rgl() -> None:
         download(url, out_dir / name)
 
 
+def download_dtu_nielsen() -> None:
+    """Download the eight named MERL-format reconstructions from DTU/Nielsen."""
+    out_dir = RAW_DIR / "dtu_nielsen"
+    for stem in DTU_NIELSEN_FILES:
+        download(f"{DTU_NIELSEN_ROOT}{stem}.binary", out_dir / f"{stem}.binary")
+
+
+def download_ngan_anisotropic() -> None:
+    """Download the four published Ngan et al. anisotropic BRDF samples."""
+    out_dir = RAW_DIR / "ngan_anisotropic"
+    for stem in NGAN_FILES:
+        download(f"{NGAN_ROOT}{stem}.zip", out_dir / f"{stem}.zip")
+    download(f"{NGAN_ROOT}read_brdf.m", out_dir / "read_brdf.m")
+
+
+def download_urban_brdf() -> None:
+    """Download the open Urban Materials BRDF archive from Recherche Data Gouv."""
+    try:
+        import requests
+    except ImportError as exc:
+        raise RuntimeError("Urban BRDF download requires requests (installed with transformers).") from exc
+    destination = RAW_DIR / "urban_brdf" / "UMBD.zip"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_file() and destination.stat().st_size > 0:
+        print(f"Already present: {destination.relative_to(REPO_ROOT)}")
+        return
+    partial = destination.with_name(destination.name + ".part")
+    try:
+        with requests.get(URBAN_BRDF_URL, headers={"User-Agent": USER_AGENT}, stream=True, timeout=(30, 180)) as response:
+            response.raise_for_status()
+            with partial.open("wb") as output:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        output.write(chunk)
+        if partial.stat().st_size == 0:
+            raise RuntimeError("Urban BRDF download returned an empty archive")
+        partial.replace(destination)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    print(f"Downloaded: {destination.relative_to(REPO_ROOT)}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dataset",
-        choices=("all", "merl", "rgl"),
+        choices=("all", "merl", "rgl", "dtu_nielsen", "ngan_anisotropic", "urban_brdf"),
         default="all",
         help="Dataset to download (default: all).",
     )
@@ -123,6 +177,12 @@ def main() -> int:
             download_merl()
         if args.dataset in ("all", "rgl"):
             download_rgl()
+        if args.dataset in ("all", "dtu_nielsen"):
+            download_dtu_nielsen()
+        if args.dataset == "ngan_anisotropic":
+            download_ngan_anisotropic()
+        if args.dataset in ("all", "urban_brdf"):
+            download_urban_brdf()
     except Exception as exc:
         print(f"Download failed: {exc}", file=sys.stderr)
         return 1

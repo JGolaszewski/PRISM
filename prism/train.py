@@ -180,6 +180,8 @@ def _checkpoint_state(
     polynomial_degree: int,
     peak_weight: float,
     basis_type: str,
+    residual_decoder: bool,
+    residual_decoder_version: int,
 ) -> dict[str, Any]:
     return {
         "epoch": epoch,
@@ -195,6 +197,8 @@ def _checkpoint_state(
         "latent_dim": latent_dim,
         "num_poly_terms": model.num_poly_terms,
         "positive_coefficients": model.positive_coefficients,
+        "residual_decoder": residual_decoder,
+        "residual_decoder_version": residual_decoder_version if residual_decoder else 0,
         "beta": beta,
         "peak_weight": peak_weight,
     }
@@ -205,6 +209,57 @@ def _save_checkpoint(path: Path, state: dict[str, Any]) -> None:
     temporary_path = path.with_name(path.name + ".tmp")
     torch.save(state, temporary_path)
     temporary_path.replace(path)
+
+
+def _initialize_shared_weights(
+    model: NDFPolynomialVAE,
+    checkpoint_path: Path,
+    basis_type: str,
+    polynomial_degree: int,
+    latent_dim: int,
+) -> None:
+    """Warm-start shared VAE weights while leaving the target residual branch fresh."""
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Initialization checkpoint not found: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    expected = {
+        "basis_type": basis_type,
+        "polynomial_degree": polynomial_degree,
+        "latent_dim": latent_dim,
+        "num_poly_terms": model.num_poly_terms,
+    }
+    for key, expected_value in expected.items():
+        actual_value = checkpoint.get(key)
+        if key == "basis_type" and actual_value == "complete_monomial":
+            actual_value = "monomial"
+        if actual_value != expected_value:
+            raise ValueError(
+                f"Initialization checkpoint {key}={actual_value!r} does not match "
+                f"requested {expected_value!r}"
+            )
+
+    source_state = checkpoint.get("model_state_dict")
+    if not isinstance(source_state, dict):
+        raise ValueError(f"Initialization checkpoint has no model_state_dict: {checkpoint_path}")
+    shared_state = {
+        key: value
+        for key, value in source_state.items()
+        if not key.startswith("residual_decoder.")
+    }
+    incompatible = model.load_state_dict(shared_state, strict=False)
+    missing_shared = [
+        key for key in incompatible.missing_keys
+        if not key.startswith("residual_decoder.")
+    ]
+    unexpected_shared = [
+        key for key in incompatible.unexpected_keys
+        if not key.startswith("residual_decoder.")
+    ]
+    if missing_shared or unexpected_shared:
+        raise ValueError(
+            "Initialization checkpoint shared weights are incompatible: "
+            f"missing={missing_shared}, unexpected={unexpected_shared}"
+        )
 
 
 def train_ndf_vae(
@@ -227,6 +282,9 @@ def train_ndf_vae(
     mse_weight: float = 0.0,
     coefficient_penalty: float = 0.0,
     gradient_weight: float = 0.0,
+    residual_decoder: bool = False,
+    residual_decoder_version: int = 3,
+    initialize_from: Path | None = None,
 ) -> NDFPolynomialVAE:
     if epochs < 1:
         raise ValueError("epochs must be at least 1")
@@ -240,6 +298,8 @@ def train_ndf_vae(
         raise ValueError("polynomial_degree must be one of 4, 6, or 8")
     if basis_type not in ("monomial", "zernike"):
         raise ValueError("basis_type must be 'monomial' or 'zernike'")
+    if residual_decoder and residual_decoder_version not in (1, 2, 3):
+        raise ValueError("residual_decoder_version must be 1, 2, or 3")
     if scheduler not in ("none", "cosine", "plateau"):
         raise ValueError("scheduler must be 'none', 'cosine', or 'plateau'")
     if beta_schedule not in ("fixed", "linear"):
@@ -320,7 +380,17 @@ def train_ndf_vae(
         # signed to allow cancellation; nonnegativity is enforced after basis
         # reconstruction in NDFPolynomialVAE.forward.
         positive_coefficients=False,
+        residual_decoder=residual_decoder,
+        residual_decoder_version=residual_decoder_version,
     ).to(device)
+    if initialize_from is not None:
+        _initialize_shared_weights(
+            model,
+            initialize_from,
+            basis_type,
+            polynomial_degree,
+            latent_dim,
+        )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=learning_rate, fused=device.type == "cuda"
     )
@@ -402,6 +472,8 @@ def train_ndf_vae(
             polynomial_degree,
             peak_weight,
             basis_type,
+            residual_decoder,
+            residual_decoder_version,
         )
         state["learning_rate"] = learning_rate
         state["scheduler"] = scheduler
@@ -411,6 +483,9 @@ def train_ndf_vae(
         state["mse_weight"] = mse_weight
         state["coefficient_penalty"] = coefficient_penalty
         state["gradient_weight"] = gradient_weight
+        state["initialize_from"] = (
+            str(initialize_from) if initialize_from is not None else None
+        )
         current_validation_loss = validation_metrics["total"]
         if current_validation_loss < best_validation_loss:
             best_validation_loss = current_validation_loss
@@ -446,6 +521,11 @@ def main() -> int:
         default=DEFAULT_POLYNOMIAL_DEGREE,
     )
     parser.add_argument("--basis-type", choices=("monomial", "zernike"), default="zernike")
+    parser.add_argument("--residual-decoder", action="store_true")
+    parser.add_argument(
+        "--residual-decoder-version", type=int, choices=(1, 2, 3), default=3
+    )
+    parser.add_argument("--initialize-from", type=Path, default=None)
     parser.add_argument("--peak-weight", type=float, default=DEFAULT_PEAK_WEIGHT)
     parser.add_argument(
         "--validation-fraction", type=float, default=DEFAULT_VALIDATION_FRACTION
@@ -482,6 +562,9 @@ def main() -> int:
             mse_weight=args.mse_weight,
             coefficient_penalty=args.coefficient_penalty,
             gradient_weight=args.gradient_weight,
+            residual_decoder=args.residual_decoder,
+            residual_decoder_version=args.residual_decoder_version,
+            initialize_from=args.initialize_from,
         )
     except Exception as exc:
         parser.exit(1, f"Training failed: {exc}\n")

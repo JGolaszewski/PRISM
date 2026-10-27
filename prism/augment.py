@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -86,8 +87,10 @@ def augment_one(
     x: np.ndarray,
     y: np.ndarray,
     disk_mask: np.ndarray,
-) -> np.ndarray:
-    """Blend 2-3 materials and apply coordinate-space domain augmentations."""
+    *,
+    return_indices: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """Blend 2-3 materials and optionally return their selected row indices."""
     count = int(rng.integers(2, 4))
     indices = rng.choice(materials.shape[0], size=count, replace=False)
     weights = rng.dirichlet(np.ones(count))
@@ -112,7 +115,10 @@ def augment_one(
     noise_sigma = rng.uniform(0.001, 0.008)
     warped += rng.normal(0.0, noise_sigma, size=warped.shape)
     warped = np.maximum(warped, 0.0)
-    return _normalize_and_mask(warped, disk_mask)
+    sample = _normalize_and_mask(warped, disk_mask)
+    if return_indices:
+        return sample, indices
+    return sample
 
 
 def generate_dataset(
@@ -120,6 +126,7 @@ def generate_dataset(
     output_dir: Path,
     num_samples: int = 30_000,
     seed: int | None = None,
+    record_lineage: bool = True,
 ) -> int:
     if num_samples < 1:
         raise ValueError("num_samples must be at least 1")
@@ -134,10 +141,24 @@ def generate_dataset(
     disk_mask = x * x + y * y <= 1.0
     rng = np.random.default_rng(seed)
 
+    lineage: dict[str, list[str]] = {}
     for sample_index in tqdm(range(num_samples), desc="Augmenting NDFs", unit="sample"):
-        sample = augment_one(materials, rng, x, y, disk_mask)
+        if record_lineage:
+            sample, source_indices = augment_one(
+                materials, rng, x, y, disk_mask, return_indices=True
+            )
+        else:
+            sample = augment_one(materials, rng, x, y, disk_mask)
         path = output_dir / f"aug_sample_{sample_index:05d}.npy"
         np.save(path, sample, allow_pickle=False)
+        if record_lineage:
+            lineage[path.name] = [paths[int(index)].stem for index in source_indices]
+
+    if record_lineage:
+        manifest_path = output_dir / "lineage.json"
+        temporary_path = manifest_path.with_suffix(".json.tmp")
+        temporary_path.write_text(json.dumps(lineage, indent=2), encoding="utf-8")
+        temporary_path.replace(manifest_path)
     return len(paths)
 
 
@@ -156,11 +177,16 @@ def main() -> int:
         help="Directory for generated .npy files.",
     )
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility.")
+    parser.add_argument(
+        "--no-lineage", action="store_true",
+        help="Skip writing the source-grid mapping sidecar.",
+    )
     args = parser.parse_args()
 
     try:
         material_count = generate_dataset(
-            args.input_dir, args.output_dir, args.num_samples, args.seed
+            args.input_dir, args.output_dir, args.num_samples, args.seed,
+            record_lineage=not args.no_lineage,
         )
     except Exception as exc:
         parser.exit(1, f"Augmentation failed: {exc}\n")

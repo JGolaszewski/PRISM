@@ -111,6 +111,54 @@ def create_legacy_bernstein_basis(
     return torch.stack(terms)
 
 
+class _ResidualUNetDecoder(nn.Module):
+    """Multi-scale residual corrector with a broad spatial receptive field."""
+
+    def __init__(self, input_channels: int) -> None:
+        super().__init__()
+        self.enc0 = nn.Sequential(
+            nn.Conv2d(input_channels, 32, 3, padding=1), nn.SiLU(),
+            nn.Conv2d(32, 32, 3, padding=1), nn.SiLU(),
+        )
+        self.enc1 = nn.Sequential(
+            nn.Conv2d(32, 64, 3, stride=2, padding=1), nn.SiLU(),
+            nn.Conv2d(64, 64, 3, padding=1), nn.SiLU(),
+        )
+        self.enc2 = nn.Sequential(
+            nn.Conv2d(64, 128, 3, stride=2, padding=1), nn.SiLU(),
+            nn.Conv2d(128, 128, 3, padding=1), nn.SiLU(),
+        )
+        self.bottleneck = nn.Sequential(
+            nn.Conv2d(128, 128, 3, padding=1), nn.SiLU(),
+            nn.Conv2d(128, 128, 3, padding=1), nn.SiLU(),
+        )
+        self.dec1 = nn.Sequential(
+            nn.Conv2d(192, 64, 3, padding=1), nn.SiLU(),
+            nn.Conv2d(64, 64, 3, padding=1), nn.SiLU(),
+        )
+        self.dec0 = nn.Sequential(
+            nn.Conv2d(96, 32, 3, padding=1), nn.SiLU(),
+            nn.Conv2d(32, 32, 3, padding=1), nn.SiLU(),
+        )
+        self.output = nn.Conv2d(32, 1, 3, padding=1)
+        nn.init.zeros_(self.output.weight)
+        nn.init.zeros_(self.output.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        enc0 = self.enc0(x)
+        enc1 = self.enc1(enc0)
+        center = self.bottleneck(self.enc2(enc1))
+        up1 = torch.nn.functional.interpolate(
+            center, size=enc1.shape[-2:], mode="bilinear", align_corners=False
+        )
+        dec1 = self.dec1(torch.cat((up1, enc1), dim=1))
+        up0 = torch.nn.functional.interpolate(
+            dec1, size=enc0.shape[-2:], mode="bilinear", align_corners=False
+        )
+        dec0 = self.dec0(torch.cat((up0, enc0), dim=1))
+        return self.output(dec0)
+
+
 class NDFPolynomialVAE(nn.Module):
     def __init__(
         self,
@@ -119,6 +167,8 @@ class NDFPolynomialVAE(nn.Module):
         hidden_dims: tuple[int, int] = (512, 256),
         latent_dim: int = 8,
         positive_coefficients: bool = False,
+        residual_decoder: bool = False,
+        residual_decoder_version: int = 1,
     ) -> None:
         super().__init__()
         if input_grid_size < 2:
@@ -133,6 +183,10 @@ class NDFPolynomialVAE(nn.Module):
         self.num_poly_terms = num_poly_terms
         self.latent_dim = latent_dim
         self.positive_coefficients = positive_coefficients
+        self.residual_decoder_enabled = residual_decoder
+        if residual_decoder and residual_decoder_version not in (1, 2, 3):
+            raise ValueError("residual_decoder_version must be 1, 2, or 3")
+        self.residual_decoder_version = residual_decoder_version if residual_decoder else 0
 
         first_hidden, second_hidden = hidden_dims
         self.encoder = nn.Sequential(
@@ -153,6 +207,34 @@ class NDFPolynomialVAE(nn.Module):
         if positive_coefficients:
             decoder_layers.append(nn.Softplus())
         self.decoder = nn.Sequential(*decoder_layers)
+        self.residual_decoder = None
+        if residual_decoder:
+            if residual_decoder_version == 1:
+                # Keep the v1 module names and tensor shapes stable for checkpoints.
+                self.residual_decoder = nn.Sequential(
+                    nn.Conv2d(latent_dim + 1, 16, kernel_size=3, padding=1),
+                    nn.SiLU(),
+                    nn.Conv2d(16, 1, kernel_size=3, padding=1),
+                )
+            elif residual_decoder_version == 2:
+                self.residual_decoder = nn.Sequential(
+                    nn.Conv2d(latent_dim + 4, 32, kernel_size=3, padding=1),
+                    nn.SiLU(),
+                    nn.Conv2d(32, 64, kernel_size=3, padding=1),
+                    nn.SiLU(),
+                    nn.Conv2d(64, 64, kernel_size=3, padding=1),
+                    nn.SiLU(),
+                    nn.Conv2d(64, 1, kernel_size=3, padding=1),
+                )
+                # Zero residual at initialization preserves the coefficient decoder exactly.
+                nn.init.zeros_(self.residual_decoder[-1].weight)
+                nn.init.zeros_(self.residual_decoder[-1].bias)
+            else:
+                self.residual_decoder = _ResidualUNetDecoder(latent_dim + 4)
+            if residual_decoder_version == 1:
+                # Zero residual at initialization preserves the coefficient decoder exactly.
+                nn.init.zeros_(self.residual_decoder[-1].weight)
+                nn.init.zeros_(self.residual_decoder[-1].bias)
 
     def encode(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         x = x.reshape(x.shape[0], -1)
@@ -172,6 +254,47 @@ class NDFPolynomialVAE(nn.Module):
         std = torch.exp(0.5 * logvar)
         return mu + torch.randn_like(std) * std
 
+    def decode_ndf(self, latent: torch.Tensor, poly_basis: torch.Tensor) -> torch.Tensor:
+        """Decode latent vectors to flattened, nonnegative NDF grids."""
+        coefficients = self.decoder(latent)
+        return self._decode_coefficients(latent, poly_basis, coefficients)
+
+    def _decode_coefficients(
+        self, latent: torch.Tensor, poly_basis: torch.Tensor, coefficients: torch.Tensor
+    ) -> torch.Tensor:
+        if poly_basis.shape not in (
+            (self.num_poly_terms, self.input_dim),
+            (self.input_dim, self.num_poly_terms),
+        ):
+            raise ValueError("poly_basis dimensions do not match this model")
+        basis_kn = poly_basis if poly_basis.shape[0] == self.num_poly_terms else poly_basis.T
+        base = torch.relu(coefficients @ basis_kn)
+        if self.residual_decoder is None:
+            return base
+        basis_mask = (basis_kn.abs().sum(dim=0) > 0).to(base.dtype)
+        base_grid = base.reshape(-1, 1, self.input_grid_size, self.input_grid_size)
+        mask = basis_mask.reshape(1, 1, self.input_grid_size, self.input_grid_size)
+        condition = latent.to(base.dtype)[:, :, None, None].expand(
+            -1, -1, self.input_grid_size, self.input_grid_size
+        )
+        residual_inputs = [base_grid, condition]
+        if self.residual_decoder_version in (2, 3):
+            coords = torch.linspace(
+                -1.0, 1.0, self.input_grid_size, device=base.device, dtype=base.dtype
+            )
+            y, x = torch.meshgrid(coords, coords, indexing="ij")
+            radius = torch.sqrt(x.square() + y.square())
+            spatial = torch.stack((x, y, radius), dim=0).unsqueeze(0).expand(
+                base.shape[0], -1, -1, -1
+            )
+            residual_inputs.append(spatial)
+        residual = self.residual_decoder(torch.cat(residual_inputs, dim=1))
+        if self.residual_decoder_version == 3:
+            # Bound the exploratory spatial correction to prevent it from
+            # overwhelming the stable coefficient reconstruction.
+            residual = 0.1 * torch.tanh(residual)
+        return (torch.relu(base_grid + residual) * mask).reshape(-1, self.input_dim)
+
     def forward(
         self,
         x: torch.Tensor,
@@ -188,9 +311,7 @@ class NDFPolynomialVAE(nn.Module):
         mu, logvar = self.encode(x)
         latent = self.reparameterize(mu, logvar) if self.training else mu
         coeffs = self.decoder(latent)
-        # Basis layout is [K, N], so [B, K] @ [K, N] -> [B, N].
-        basis_kn = poly_basis if poly_basis.shape[0] == self.num_poly_terms else poly_basis.T
-        ndf_recon = torch.relu(torch.matmul(coeffs, basis_kn))
+        ndf_recon = self._decode_coefficients(latent, poly_basis, coeffs)
         return ndf_recon, coeffs, mu, logvar
 
 

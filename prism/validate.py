@@ -76,6 +76,13 @@ def _load_model(
         num_poly_terms=num_poly_terms,
         latent_dim=latent_dim,
         positive_coefficients=positive_coefficients,
+        residual_decoder=bool(checkpoint.get("residual_decoder", False)),
+        residual_decoder_version=int(
+            checkpoint.get(
+                "residual_decoder_version",
+                1 if checkpoint.get("residual_decoder", False) else 1,
+            )
+        ),
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -229,9 +236,7 @@ def _save_interpolation(
     t_values = torch.linspace(0.0, 1.0, steps, device=device)
     with torch.no_grad():
         latent = (1.0 - t_values[:, None]) * latent_a + t_values[:, None] * latent_b
-        coefficients = model.decoder(latent)
-        decoded = coefficients @ basis
-        decoded = torch.relu(decoded)
+        decoded = model.decode_ndf(latent, basis)
         grids = decoded.reshape(steps, GRID_SIZE, GRID_SIZE).cpu().numpy()
 
     figure, axes = plt.subplots(
@@ -265,9 +270,7 @@ def _save_prior_samples(
 ) -> None:
     with torch.no_grad():
         latent = torch.randn(9, model.latent_dim, device=device)
-        coefficients = model.decoder(latent)
-        decoded = coefficients @ basis
-        decoded = torch.relu(decoded)
+        decoded = model.decode_ndf(latent, basis)
         grids = decoded.reshape(9, GRID_SIZE, GRID_SIZE).cpu().numpy()
     vmax = max(float(np.max(grids)), 1e-8)
     figure, axes = plt.subplots(3, 3, figsize=(8, 8), constrained_layout=True)
