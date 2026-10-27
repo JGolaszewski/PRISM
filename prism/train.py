@@ -16,6 +16,7 @@ from prism.model import (
     DEFAULT_POLYNOMIAL_DEGREE,
     NDFPolynomialVAE,
     create_polynomial_basis,
+    create_grid_zernike_basis,
     select_device,
 )
 
@@ -42,16 +43,55 @@ def compute_reconstruction_loss(
     return torch.mean(weights * torch.abs(torch.log1p(ndf_recon) - torch.log1p(target)))
 
 
+def compute_gradient_matching_loss(
+    ndf_recon: torch.Tensor, target: torch.Tensor, grid_size: int = GRID_SIZE
+) -> torch.Tensor:
+    """Match adjacent log-NDF changes in both grid directions.
+
+    This term penalizes ringing in the predicted profile while preserving
+    target edges: it compares reconstruction gradients with target gradients
+    instead of smoothing the prediction toward a flat field.
+    """
+    if ndf_recon.shape != target.shape:
+        raise ValueError("ndf_recon and target must have matching shapes")
+    if ndf_recon.shape[-1] != grid_size * grid_size:
+        raise ValueError(f"expected flattened {grid_size}x{grid_size} grids")
+    prediction = torch.log1p(ndf_recon.float().reshape(-1, grid_size, grid_size))
+    reference = torch.log1p(target.float().reshape(-1, grid_size, grid_size))
+    prediction_dx = prediction[..., :, 1:] - prediction[..., :, :-1]
+    reference_dx = reference[..., :, 1:] - reference[..., :, :-1]
+    prediction_dy = prediction[..., 1:, :] - prediction[..., :-1, :]
+    reference_dy = reference[..., 1:, :] - reference[..., :-1, :]
+    return 0.5 * (
+        torch.mean(torch.abs(prediction_dx - reference_dx))
+        + torch.mean(torch.abs(prediction_dy - reference_dy))
+    )
+
+
 def _losses(
     model: NDFPolynomialVAE,
     batch: torch.Tensor,
     basis: torch.Tensor,
     beta: float,
     peak_weight: float,
+    mse_weight: float,
+    coefficient_penalty: float,
+    coefficient_degree_weights: torch.Tensor,
+    gradient_weight: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    ndf_recon, _, mu, logvar = model(batch, basis)
+    ndf_recon, coefficients, mu, logvar = model(batch, basis)
     targets = batch.reshape(batch.shape[0], -1)
     recon_loss = compute_reconstruction_loss(ndf_recon, targets, peak_weight)
+    if mse_weight:
+        recon_loss = recon_loss + mse_weight * torch.mean((ndf_recon - targets).square())
+    if coefficient_penalty:
+        recon_loss = recon_loss + coefficient_penalty * torch.mean(
+            coefficients.square() * coefficient_degree_weights
+        )
+    if gradient_weight:
+        recon_loss = recon_loss + gradient_weight * compute_gradient_matching_loss(
+            ndf_recon, targets
+        )
     mu, logvar = mu.float(), logvar.float()
     kl_loss = -0.5 * torch.mean(1.0 + logvar - mu.square() - logvar.exp())
     return recon_loss + beta * kl_loss, recon_loss, kl_loss
@@ -66,6 +106,10 @@ def _run_epoch(
     device: torch.device,
     beta: float,
     peak_weight: float,
+    mse_weight: float,
+    coefficient_penalty: float,
+    coefficient_degree_weights: torch.Tensor,
+    gradient_weight: float,
     optimizer: torch.optim.Optimizer | None,
     epoch: int,
     epochs: int,
@@ -97,11 +141,20 @@ def _run_epoch(
                 enabled=use_amp,
             ):
                 total_loss, recon_loss, kl_loss = _losses(
-                    model, batch, basis, beta, peak_weight
+                    model,
+                    batch,
+                    basis,
+                    beta,
+                    peak_weight,
+                    mse_weight,
+                    coefficient_penalty,
+                    coefficient_degree_weights,
+                    gradient_weight,
                 )
             if training:
                 total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                gradient_clip = 1.0 if peak_weight > 30.0 else 5.0
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=gradient_clip)
                 optimizer.step()
 
             current_size = batch.shape[0]
@@ -126,6 +179,9 @@ def _checkpoint_state(
     beta: float,
     polynomial_degree: int,
     peak_weight: float,
+    basis_type: str,
+    residual_decoder: bool,
+    residual_decoder_version: int,
 ) -> dict[str, Any]:
     return {
         "epoch": epoch,
@@ -137,9 +193,12 @@ def _checkpoint_state(
         "best_validation_loss": best_validation_loss,
         "grid_size": GRID_SIZE,
         "polynomial_degree": polynomial_degree,
-        "basis_type": "complete_monomial",
+        "basis_type": basis_type,
         "latent_dim": latent_dim,
         "num_poly_terms": model.num_poly_terms,
+        "positive_coefficients": model.positive_coefficients,
+        "residual_decoder": residual_decoder,
+        "residual_decoder_version": residual_decoder_version if residual_decoder else 0,
         "beta": beta,
         "peak_weight": peak_weight,
     }
@@ -150,6 +209,57 @@ def _save_checkpoint(path: Path, state: dict[str, Any]) -> None:
     temporary_path = path.with_name(path.name + ".tmp")
     torch.save(state, temporary_path)
     temporary_path.replace(path)
+
+
+def _initialize_shared_weights(
+    model: NDFPolynomialVAE,
+    checkpoint_path: Path,
+    basis_type: str,
+    polynomial_degree: int,
+    latent_dim: int,
+) -> None:
+    """Warm-start shared VAE weights while leaving the target residual branch fresh."""
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Initialization checkpoint not found: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    expected = {
+        "basis_type": basis_type,
+        "polynomial_degree": polynomial_degree,
+        "latent_dim": latent_dim,
+        "num_poly_terms": model.num_poly_terms,
+    }
+    for key, expected_value in expected.items():
+        actual_value = checkpoint.get(key)
+        if key == "basis_type" and actual_value == "complete_monomial":
+            actual_value = "monomial"
+        if actual_value != expected_value:
+            raise ValueError(
+                f"Initialization checkpoint {key}={actual_value!r} does not match "
+                f"requested {expected_value!r}"
+            )
+
+    source_state = checkpoint.get("model_state_dict")
+    if not isinstance(source_state, dict):
+        raise ValueError(f"Initialization checkpoint has no model_state_dict: {checkpoint_path}")
+    shared_state = {
+        key: value
+        for key, value in source_state.items()
+        if not key.startswith("residual_decoder.")
+    }
+    incompatible = model.load_state_dict(shared_state, strict=False)
+    missing_shared = [
+        key for key in incompatible.missing_keys
+        if not key.startswith("residual_decoder.")
+    ]
+    unexpected_shared = [
+        key for key in incompatible.unexpected_keys
+        if not key.startswith("residual_decoder.")
+    ]
+    if missing_shared or unexpected_shared:
+        raise ValueError(
+            "Initialization checkpoint shared weights are incompatible: "
+            f"missing={missing_shared}, unexpected={unexpected_shared}"
+        )
 
 
 def train_ndf_vae(
@@ -165,6 +275,16 @@ def train_ndf_vae(
     peak_weight: float = DEFAULT_PEAK_WEIGHT,
     validation_fraction: float = DEFAULT_VALIDATION_FRACTION,
     seed: int | None = None,
+    basis_type: str = "zernike",
+    scheduler: str = "none",
+    beta_schedule: str = "fixed",
+    beta_warmup_epochs: int = 10,
+    mse_weight: float = 0.0,
+    coefficient_penalty: float = 0.0,
+    gradient_weight: float = 0.0,
+    residual_decoder: bool = False,
+    residual_decoder_version: int = 3,
+    initialize_from: Path | None = None,
 ) -> NDFPolynomialVAE:
     if epochs < 1:
         raise ValueError("epochs must be at least 1")
@@ -176,6 +296,22 @@ def train_ndf_vae(
         raise ValueError("save_freq must be at least 1")
     if polynomial_degree not in (4, 6, 8):
         raise ValueError("polynomial_degree must be one of 4, 6, or 8")
+    if basis_type not in ("monomial", "zernike"):
+        raise ValueError("basis_type must be 'monomial' or 'zernike'")
+    if residual_decoder and residual_decoder_version not in (1, 2, 3):
+        raise ValueError("residual_decoder_version must be 1, 2, or 3")
+    if scheduler not in ("none", "cosine", "plateau"):
+        raise ValueError("scheduler must be 'none', 'cosine', or 'plateau'")
+    if beta_schedule not in ("fixed", "linear"):
+        raise ValueError("beta_schedule must be 'fixed' or 'linear'")
+    if beta_warmup_epochs < 1:
+        raise ValueError("beta_warmup_epochs must be at least 1")
+    if mse_weight < 0.0 or not math.isfinite(mse_weight):
+        raise ValueError("mse_weight must be finite and nonnegative")
+    if coefficient_penalty < 0.0 or not math.isfinite(coefficient_penalty):
+        raise ValueError("coefficient_penalty must be finite and nonnegative")
+    if gradient_weight < 0.0 or not math.isfinite(gradient_weight):
+        raise ValueError("gradient_weight must be finite and nonnegative")
     if peak_weight < 0.0 or not math.isfinite(peak_weight):
         raise ValueError("peak_weight must be finite and nonnegative")
     if not 0.0 <= validation_fraction < 1.0:
@@ -221,17 +357,52 @@ def train_ndf_vae(
     if validation_count:
         print(f"Validation set: {validation_count} samples")
 
-    basis = create_polynomial_basis(
-        grid_size=GRID_SIZE, degree=polynomial_degree
+    # Construct once before epoch/batch loops and retain on the selected device.
+    basis = (
+        create_grid_zernike_basis(GRID_SIZE, polynomial_degree)
+        if basis_type == "zernike"
+        else create_polynomial_basis(grid_size=GRID_SIZE, degree=polynomial_degree)
     ).to(device)
+    coefficient_degree_weights = torch.tensor(
+        [
+            (degree / max(polynomial_degree, 1)) ** 4
+            for degree in range(polynomial_degree + 1)
+            for _ in range(degree + 1)
+        ],
+        dtype=torch.float32,
+        device=device,
+    )
     model = NDFPolynomialVAE(
         input_grid_size=GRID_SIZE,
         num_poly_terms=basis.shape[0],
         latent_dim=latent_dim,
+        # Zernike polynomials are signed. Their coefficients must also be
+        # signed to allow cancellation; nonnegativity is enforced after basis
+        # reconstruction in NDFPolynomialVAE.forward.
+        positive_coefficients=False,
+        residual_decoder=residual_decoder,
+        residual_decoder_version=residual_decoder_version,
     ).to(device)
+    if initialize_from is not None:
+        _initialize_shared_weights(
+            model,
+            initialize_from,
+            basis_type,
+            polynomial_degree,
+            latent_dim,
+        )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=learning_rate, fused=device.type == "cuda"
     )
+    lr_scheduler = None
+    if scheduler == "cosine":
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=epochs, eta_min=learning_rate * 0.01
+        )
+    elif scheduler == "plateau":
+        lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=8, min_lr=learning_rate * 0.01
+        )
 
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     train_history: list[dict[str, float]] = []
@@ -239,6 +410,9 @@ def train_ndf_vae(
     best_validation_loss = float("inf")
 
     for epoch in range(1, epochs + 1):
+        current_beta = beta
+        if beta_schedule == "linear":
+            current_beta *= min(1.0, epoch / beta_warmup_epochs)
         train_metrics = _run_epoch(
             model,
             samples,
@@ -246,8 +420,12 @@ def train_ndf_vae(
             batch_size,
             basis,
             device,
-            beta,
+            current_beta,
             peak_weight,
+            mse_weight,
+            coefficient_penalty,
+            coefficient_degree_weights,
+            gradient_weight,
             optimizer,
             epoch,
             epochs,
@@ -261,8 +439,12 @@ def train_ndf_vae(
                 batch_size,
                 basis,
                 device,
-                beta,
+                current_beta,
                 peak_weight,
+                mse_weight,
+                coefficient_penalty,
+                coefficient_degree_weights,
+                gradient_weight,
                 None,
                 epoch,
                 epochs,
@@ -289,6 +471,20 @@ def train_ndf_vae(
             beta,
             polynomial_degree,
             peak_weight,
+            basis_type,
+            residual_decoder,
+            residual_decoder_version,
+        )
+        state["learning_rate"] = learning_rate
+        state["scheduler"] = scheduler
+        state["beta_schedule"] = beta_schedule
+        state["beta_warmup_epochs"] = beta_warmup_epochs
+        state["effective_beta"] = current_beta
+        state["mse_weight"] = mse_weight
+        state["coefficient_penalty"] = coefficient_penalty
+        state["gradient_weight"] = gradient_weight
+        state["initialize_from"] = (
+            str(initialize_from) if initialize_from is not None else None
         )
         current_validation_loss = validation_metrics["total"]
         if current_validation_loss < best_validation_loss:
@@ -301,6 +497,11 @@ def train_ndf_vae(
             _save_checkpoint(
                 checkpoint_dir / f"checkpoint_epoch_{epoch:02d}.pt", state
             )
+        if lr_scheduler is not None:
+            if scheduler == "plateau":
+                lr_scheduler.step(current_validation_loss)
+            else:
+                lr_scheduler.step()
 
     return model
 
@@ -319,11 +520,26 @@ def main() -> int:
         "--poly-degree", type=int, choices=(4, 6, 8),
         default=DEFAULT_POLYNOMIAL_DEGREE,
     )
+    parser.add_argument("--basis-type", choices=("monomial", "zernike"), default="zernike")
+    parser.add_argument("--residual-decoder", action="store_true")
+    parser.add_argument(
+        "--residual-decoder-version", type=int, choices=(1, 2, 3), default=3
+    )
+    parser.add_argument("--initialize-from", type=Path, default=None)
     parser.add_argument("--peak-weight", type=float, default=DEFAULT_PEAK_WEIGHT)
     parser.add_argument(
         "--validation-fraction", type=float, default=DEFAULT_VALIDATION_FRACTION
     )
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--scheduler", choices=("none", "cosine", "plateau"), default="none")
+    parser.add_argument("--beta-schedule", choices=("fixed", "linear"), default="fixed")
+    parser.add_argument("--beta-warmup-epochs", type=int, default=10)
+    parser.add_argument("--mse-weight", type=float, default=0.0)
+    parser.add_argument("--coefficient-penalty", type=float, default=0.0)
+    parser.add_argument(
+        "--gradient-weight", type=float, default=0.0,
+        help="Weight for matching adjacent log-NDF gradients in x and y",
+    )
     args = parser.parse_args()
     try:
         train_ndf_vae(
@@ -339,6 +555,16 @@ def main() -> int:
             peak_weight=args.peak_weight,
             validation_fraction=args.validation_fraction,
             seed=args.seed,
+            basis_type=args.basis_type,
+            scheduler=args.scheduler,
+            beta_schedule=args.beta_schedule,
+            beta_warmup_epochs=args.beta_warmup_epochs,
+            mse_weight=args.mse_weight,
+            coefficient_penalty=args.coefficient_penalty,
+            gradient_weight=args.gradient_weight,
+            residual_decoder=args.residual_decoder,
+            residual_decoder_version=args.residual_decoder_version,
+            initialize_from=args.initialize_from,
         )
     except Exception as exc:
         parser.exit(1, f"Training failed: {exc}\n")

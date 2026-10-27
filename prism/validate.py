@@ -18,6 +18,7 @@ from prism.dataloader import AugmentedNDFDataset, GRID_SIZE
 from prism.model import (
     NDFPolynomialVAE,
     create_legacy_bernstein_basis,
+    create_grid_zernike_basis,
     create_polynomial_basis,
     select_device,
 )
@@ -41,7 +42,7 @@ def _load_model(
         raise ValueError(f"Checkpoint has no model_state_dict: {checkpoint_path}")
 
     grid_size = int(checkpoint.get("grid_size", GRID_SIZE))
-    polynomial_degree = int(checkpoint.get("polynomial_degree", 4))
+    polynomial_degree = int(checkpoint.get("polynomial_degree", 8))
     latent_dim = int(checkpoint.get("latent_dim", 8))
     num_poly_terms = int(
         checkpoint.get("num_poly_terms", (polynomial_degree + 1) * (polynomial_degree + 2) // 2)
@@ -54,9 +55,17 @@ def _load_model(
     if basis_type == "tensor_product_bernstein" or is_legacy_bernstein:
         basis = create_legacy_bernstein_basis(grid_size, polynomial_degree).to(device)
         positive_coefficients = True
-    else:
+    elif basis_type == "zernike":
+        basis = create_grid_zernike_basis(grid_size, polynomial_degree).to(device)
+        positive_coefficients = True
+    elif basis_type in ("monomial", "complete_monomial", None):
         basis = create_polynomial_basis(grid_size, polynomial_degree).to(device)
         positive_coefficients = False
+    else:
+        raise ValueError(f"Unsupported checkpoint basis_type: {basis_type!r}")
+    positive_coefficients = bool(
+        checkpoint.get("positive_coefficients", positive_coefficients)
+    )
     if basis.shape[0] != num_poly_terms:
         raise ValueError(
             f"Checkpoint expects {num_poly_terms} polynomial terms, but degree "
@@ -67,6 +76,13 @@ def _load_model(
         num_poly_terms=num_poly_terms,
         latent_dim=latent_dim,
         positive_coefficients=positive_coefficients,
+        residual_decoder=bool(checkpoint.get("residual_decoder", False)),
+        residual_decoder_version=int(
+            checkpoint.get(
+                "residual_decoder_version",
+                1 if checkpoint.get("residual_decoder", False) else 1,
+            )
+        ),
     ).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
     model.eval()
@@ -167,6 +183,10 @@ def _save_comparison_grid(
         axes[row, 3].plot(np.arange(GRID_SIZE), np.log1p(target[GRID_SIZE // 2]), label="GT", linewidth=1.5)
         axes[row, 3].plot(np.arange(GRID_SIZE), np.log1p(prediction[GRID_SIZE // 2]), label="Recon", linewidth=1.5)
         axes[row, 3].set_xlim(0, GRID_SIZE - 1)
+        target_peak = float(target[GRID_SIZE // 2].max())
+        predicted_peak = float(prediction[GRID_SIZE // 2].max())
+        peak_ratio = predicted_peak / target_peak if target_peak > 0.0 else 0.0
+        axes[row, 3].set_ylabel(f"peak {peak_ratio:.0%}")
         axes[row, 3].grid(alpha=0.25)
         axes[row, 3].legend(loc="best", fontsize=8)
         axes[row, 0].set_ylabel(dataset.files[int(index)].name, fontsize=8)
@@ -177,7 +197,29 @@ def _save_comparison_grid(
     figure.suptitle("NDF reconstruction comparison", fontsize=14)
     figure.tight_layout(rect=(0, 0, 1, 0.99))
     figure.savefig(output_dir / "comparison_grid.png", dpi=300, bbox_inches="tight")
+    figure.savefig(output_dir / "comparison_grid.jpg", dpi=300, bbox_inches="tight")
     plt.close(figure)
+
+
+def _center_row_peak_report(
+    indices: np.ndarray, targets: np.ndarray, predictions: np.ndarray, dataset: AugmentedNDFDataset
+) -> list[dict[str, float | int | str]]:
+    """Report center-row peak-height retention for each plotted sample."""
+    target_profiles = targets[:, GRID_SIZE // 2, :]
+    predicted_profiles = predictions[:, GRID_SIZE // 2, :]
+    reports: list[dict[str, float | int | str]] = []
+    for index, target_profile, predicted_profile in zip(indices, target_profiles, predicted_profiles):
+        target_peak = float(target_profile.max())
+        predicted_peak = float(predicted_profile.max())
+        ratio = predicted_peak / target_peak if target_peak > 0.0 else float("nan")
+        reports.append({
+            "material": dataset.files[int(index)].stem,
+            "target_peak": target_peak,
+            "predicted_peak": predicted_peak,
+            "peak_height_ratio": ratio,
+            "meets_90_percent": ratio >= 0.90,
+        })
+    return reports
 
 
 def _save_interpolation(
@@ -194,10 +236,7 @@ def _save_interpolation(
     t_values = torch.linspace(0.0, 1.0, steps, device=device)
     with torch.no_grad():
         latent = (1.0 - t_values[:, None]) * latent_a + t_values[:, None] * latent_b
-        coefficients = model.decoder(latent)
-        decoded = coefficients @ basis
-        if not model.positive_coefficients:
-            decoded = torch.relu(decoded)
+        decoded = model.decode_ndf(latent, basis)
         grids = decoded.reshape(steps, GRID_SIZE, GRID_SIZE).cpu().numpy()
 
     figure, axes = plt.subplots(
@@ -231,10 +270,7 @@ def _save_prior_samples(
 ) -> None:
     with torch.no_grad():
         latent = torch.randn(9, model.latent_dim, device=device)
-        coefficients = model.decoder(latent)
-        decoded = coefficients @ basis
-        if not model.positive_coefficients:
-            decoded = torch.relu(decoded)
+        decoded = model.decode_ndf(latent, basis)
         grids = decoded.reshape(9, GRID_SIZE, GRID_SIZE).cpu().numpy()
     vmax = max(float(np.max(grids)), 1e-8)
     figure, axes = plt.subplots(3, 3, figsize=(8, 8), constrained_layout=True)
@@ -284,10 +320,24 @@ def validate(
     metrics = _evaluate_metrics(model, basis, dataset, device, batch_size)
     rng = np.random.default_rng(seed)
     comparison_count = min(num_samples, len(dataset))
-    comparison_indices = np.sort(rng.choice(len(dataset), comparison_count, replace=False))
+    # Put the two strongest center-row highlights first so the first two
+    # profile rows directly expose peak preservation.
+    center_row_peaks = (
+        dataset.samples.reshape(len(dataset), GRID_SIZE, GRID_SIZE)[:, GRID_SIZE // 2, :]
+        .amax(dim=1)
+        .cpu()
+        .numpy()
+    )
+    highlight_count = min(2, comparison_count)
+    highlight_indices = np.argsort(center_row_peaks)[-highlight_count:][::-1]
+    remaining = np.setdiff1d(np.arange(len(dataset)), highlight_indices, assume_unique=False)
+    random_count = comparison_count - highlight_count
+    random_indices = rng.choice(remaining, random_count, replace=False) if random_count else np.array([], dtype=int)
+    comparison_indices = np.concatenate((highlight_indices, np.sort(random_indices)))
     targets, predictions, latents = _predict_samples(
         model, basis, dataset, comparison_indices, device
     )
+    peak_report = _center_row_peak_report(comparison_indices, targets, predictions, dataset)
     _save_comparison_grid(output_dir, dataset, comparison_indices, targets, predictions)
 
     interpolation_indices = rng.choice(len(dataset), size=2, replace=False)
@@ -321,6 +371,7 @@ def validate(
         "polynomial_degree": int(checkpoint.get("polynomial_degree", 4)),
         "basis_type": checkpoint.get("basis_type", "legacy_tensor_product_bernstein"),
         "comparison_samples": comparison_count,
+        "center_row_peak_retention": peak_report,
         "interpolation_steps": interp_steps,
         "seed": seed,
     }

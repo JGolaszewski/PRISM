@@ -21,5 +21,6 @@ sympy==1.14.0
 torch==2.14.1+cu132
 torchvision==0.29.1+cu132
 tqdm==4.70.1
+transformers>=4.40,<5
 typing_extensions==4.16.0
 tzdata==2026.5

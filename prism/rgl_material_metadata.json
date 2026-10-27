@@ -1,0 +1,408 @@
+{
+  "source": "https://rgl.epfl.ch/materials",
+  "retrieved_on": "2026-10-23",
+  "records": {
+    "acrylic_felt_green": {
+      "description": "Green acrylic felt (Edukit A4)",
+      "tags": [
+        "isotropic",
+        "felt"
+      ]
+    },
+    "acrylic_felt_orange": {
+      "description": "Orange acrylic felt (Edukit A4)",
+      "tags": [
+        "isotropic",
+        "felt"
+      ]
+    },
+    "acrylic_felt_pink": {
+      "description": "Pink acrylic felt (Edukit A4)",
+      "tags": [
+        "isotropic",
+        "felt"
+      ]
+    },
+    "acrylic_felt_purple": {
+      "description": "Purple acrylic felt (Edukit A4)",
+      "tags": [
+        "isotropic",
+        "felt"
+      ]
+    },
+    "acrylic_felt_white": {
+      "description": "White acrylic felt (Edukit A4)",
+      "tags": [
+        "isotropic",
+        "felt"
+      ]
+    },
+    "acrylic_felt_yellow": {
+      "description": "Yellow acrylic felt (Edukit A4)",
+      "tags": [
+        "isotropic",
+        "felt"
+      ]
+    },
+    "aniso_brushed_aluminium_1": {
+      "description": "Brushed aluminium sheet (https://www.gah.de/profile-bleche/produkte/reparatur-und-bastlerbleche-1/glattblech-8/)",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "aniso_copper_sheet": {
+      "description": "Smooth copper sheet -- anisotropic",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "aniso_green_pvc": {
+      "description": "Guttagliss Hobbycolor, https://www.gutta.com/en/products/decorative-sheets/hobbycolor.html",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "aniso_metallic_paper_copper": {
+      "description": "Copper metallic foil card",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "aniso_metallic_paper_gold": {
+      "description": "Gold metallic foil card",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "aniso_miro_7": {
+      "description": "Alanod Miro #7 5000GP aluminium sample",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "aniso_morpho_melenaus": {
+      "description": "Morpho melenaus specimen (male, scan covers dorsal surface of right fore wing)",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "aniso_sari_silk_2color": {
+      "description": "Silk sample from an Indian sari, with differently-colored warp and weft yarns",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "aurora_white": {
+      "description": "TeckWrap vinyl wrapping film (Aurora White DCH02)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cardboard": {
+      "description": "Brown corrugated cardboard, smooth surface",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "cc_amber_citrine": {
+      "description": "TeckWrap vinyl wrapping film (Amber Citrine MCH05)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cc_blue_agat": {
+      "description": "TeckWrap vinyl wrapping film (Blue Agat MCH03)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cc_green_malachite": {
+      "description": "TeckWrap vinyl wrapping film (Green Malachite MCH04)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cc_ibiza_sunset": {
+      "description": "TeckWrap vinyl wrapping film (Ibiza Sunset RD02)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cc_iris_purple_gem": {
+      "description": "TeckWrap vinyl wrapping film (Iris Purple Gem RD03)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cc_nothern_aurora": {
+      "description": "TeckWrap vinyl wrapping film (Nothern Aurora RD05)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cg_sunflower": {
+      "description": "TeckWrap vinyl wrapping film (Sunflower CG12)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "chm_light_blue": {
+      "description": "TeckWrap vinyl wrapping film (Light Blue CHM17E)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "chm_mint": {
+      "description": "TeckWrap vinyl wrapping film (Mint CHM16E)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "chm_orange": {
+      "description": "TeckWrap vinyl wrapping film (Orange CHM11E)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cm_military_green": {
+      "description": "TeckWrap vinyl wrapping film (Military Green CM09)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cm_toxic_green": {
+      "description": "TeckWrap vinyl wrapping film (Toxic Green CM08)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "cm_white": {
+      "description": "TeckWrap vinyl wrapping film (White CM02)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "colodur_azure_4e": {
+      "description": "Coop Colodur wall paint sample swatch (Azure 4E)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "colodur_connemara_4c": {
+      "description": "Coop Colodur wall paint sample swatch (Connemara 4C)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "colodur_kalahari_2a": {
+      "description": "Coop Colodur wall paint sample swatch (Kalahari 2A)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "colodur_napoli_4f": {
+      "description": "Coop Colodur wall paint sample swatch (Napoli 4F)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "ilm_aniso_darth_vader_pants": {
+      "description": "Darth Vader pants sample swatch (neoprene; from \"Solo: A Star Wars Story\", provided by ILM)",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "ilm_aniso_tarkin_tunic": {
+      "description": "Grand Moff Tarkin tunic sample (from \"Solo: A Star Wars Story\", provided by ILM)",
+      "tags": [
+        "anisotropic"
+      ]
+    },
+    "ilm_l3_37_dark_green": {
+      "description": "Dark green paint from L3-37 robot (from \"Solo: A Star Wars Story\", provided by ILM)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "ilm_l3_37_matte": {
+      "description": "Matte paint from L3-37 robot (from \"Solo: A Star Wars Story\", provided by ILM), top right swatch on sample",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "ilm_l3_37_metallic": {
+      "description": "Metallic paint from L3-37 robot (from \"Solo: A Star Wars Story\", provided by ILM), bottom right swatch",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "ilm_solo_m_68": {
+      "description": "Blue metallic m68-speeder material (from \"Solo: A Star Wars Story\", provided by ILM)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "ilm_solo_millennium_falcon": {
+      "description": "Millennium Falcon paint sample (from \"Solo: A Star Wars Story\", provided by ILM)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "irid_flake_paint1": {
+      "description": "Iridescent flake car paint (\"Dupli-color flip flop ultra\") on top of aluminium with black primer",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "irid_flake_paint1_fine": {
+      "description": "Iridescent flake car paint (\"Dupli-color flip flop ultra\") on top of aluminium with black primer",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "irid_flake_paint2": {
+      "description": "Iridescent car paint with flakes",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "laika_ceiling_paint_18_gray": {
+      "description": "Waterborne ceiling paint, ultra flat, custom color match to Kodak 18% gray card. Provided by LAIKA.",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "leaf_maple": {
+      "description": "Maple leaf sample (collected in Lausanne on June 1, 2018)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "paper_blue": {
+      "description": "Blue A4 paper (160 gsm)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "paper_green": {
+      "description": "Green A4 paper (160 gsm)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "paper_red": {
+      "description": "Red A4 paper (160 gsm)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "paper_white": {
+      "description": "White A4 paper (160 gsm)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "paper_yellow": {
+      "description": "Yellow A4 paper (160 gsm)",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "satin_blue": {
+      "description": "TeckWrap vinyl wrapping film (Blue Satin CK905)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "satin_gold": {
+      "description": "TeckWrap vinyl wrapping film (Gold Satin CK906)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "satin_purple": {
+      "description": "TeckWrap vinyl wrapping film (Purple Satin CK907)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "satin_rosaline": {
+      "description": "TeckWrap vinyl wrapping film (Rosaline Satin CK904)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "satin_white": {
+      "description": "TeckWrap vinyl wrapping film (White Satin CK903)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "spectralon": {
+      "description": "Labsphere SRS-99-020 reflectance standard",
+      "tags": [
+        "isotropic"
+      ]
+    },
+    "vch_dragon_eye_red": {
+      "description": "TeckWrap vinyl wrapping film (Dragon Eye Red VCH501N)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "vch_frozen_amethyst": {
+      "description": "TeckWrap vinyl wrapping film (Frozen Amethyst VCH503N)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "vch_golden_yellow": {
+      "description": "TeckWrap vinyl wrapping film (Golden Yellow VCH508N)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "vch_silk_blue": {
+      "description": "TeckWrap vinyl wrapping film (Silk Blue VCH502N)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "vch_ultra_pink": {
+      "description": "TeckWrap vinyl wrapping film (Ultra Pink VCH504N)",
+      "tags": [
+        "isotropic",
+        "teckwrap"
+      ]
+    },
+    "weta_brushed_steel_satin_pink": {
+      "description": "Brushed steel samples from Weta Digital (\"Satin Pink\")",
+      "tags": [
+        "anisotropic"
+      ]
+    }
+  }
+}
