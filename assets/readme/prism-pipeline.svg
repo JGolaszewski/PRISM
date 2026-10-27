@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="360" viewBox="0 0 1400 360" role="img" aria-labelledby="title desc">
+  <title id="title">PRISM prompt-to-NDF inference pipeline</title>
+  <desc id="desc">A prompt is tokenized and encoded by E5 into a 1024-dimensional embedding. The PRISM retriever combines five prototypes into a 16-dimensional latent. A Residual V3 Zernike decoder maps that latent to a 64 by 64 NDF grid.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#0b1220"/><stop offset="1" stop-color="#111c2d"/></linearGradient>
+    <linearGradient id="heat" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffc979"/><stop offset=".5" stop-color="#f07c54"/><stop offset="1" stop-color="#8f70e8"/></linearGradient>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#8ea7c5"/></marker>
+    <style>
+      text{font-family:Inter,Segoe UI,Arial,sans-serif;fill:#edf3fa}
+      .card{fill:#121e30;stroke:#293b53;stroke-width:1.5}
+      .title{font-size:18px;font-weight:700}
+      .sub{font-size:13px;fill:#a8bad0}
+      .accent{fill:#8fb5ff}
+      .arrow{stroke:#8ea7c5;stroke-width:2;marker-end:url(#arrow)}
+    </style>
+  </defs>
+  <rect width="1400" height="360" rx="24" fill="url(#bg)"/>
+  <text x="36" y="42" font-size="13" font-weight="700" letter-spacing="2" fill="#8fb5ff">TEXT PROMPT → MATERIAL NDF</text>
+  <text x="36" y="68" font-size="13" fill="#91a5bd">One prompt per inference pass · fixed batch size 1</text>
+
+  <g transform="translate(28 105)">
+    <rect class="card" width="220" height="206" rx="18"/>
+    <circle cx="42" cy="45" r="23" fill="#26364c"/><text x="35" y="53" font-size="25" fill="#ffcf8e">“</text>
+    <text class="title" x="24" y="99">Prompt + tokenize</text>
+    <text class="sub" x="24" y="128">“query: brushed aluminum”</text>
+    <text class="sub" x="24" y="151">Pad / truncate to 128 tokens</text>
+    <text class="sub" x="24" y="178">input_ids · attention_mask</text>
+  </g>
+  <path class="arrow" d="M252 208H284"/>
+
+  <g transform="translate(292 105)">
+    <rect class="card" width="220" height="206" rx="18"/>
+    <circle cx="43" cy="45" r="23" fill="#203d4a"/>
+    <g fill="#79dfce"><rect x="33" y="32" width="5" height="25" rx="2"/><rect x="42" y="38" width="5" height="19" rx="2"/><rect x="51" y="28" width="5" height="29" rx="2"/></g>
+    <text class="title" x="24" y="99">E5 encoder</text>
+    <text class="sub" x="24" y="128">e5-large-v2 · ONNX</text>
+    <text class="sub" x="24" y="151">Masked mean pooling</text>
+    <text class="sub" x="24" y="178">Normalized 1024-D vector</text>
+  </g>
+  <path class="arrow" d="M516 208H552"/>
+
+  <g transform="translate(560 105)">
+    <rect class="card" width="220" height="206" rx="18"/>
+    <circle cx="43" cy="45" r="23" fill="#372e4d"/>
+    <g stroke="#b7a1ff" stroke-width="2"><path d="M34 36L42 32L51 38M34 36L39 49L51 38M39 49L51 52L51 38"/></g>
+    <g fill="#d4c8ff"><circle cx="34" cy="36" r="3"/><circle cx="42" cy="32" r="3"/><circle cx="51" cy="38" r="3"/><circle cx="39" cy="49" r="3"/><circle cx="51" cy="52" r="3"/></g>
+    <text class="title" x="24" y="99">PRISM retriever</text>
+    <text class="sub" x="24" y="128">Blend 5 learned prototypes</text>
+    <text class="sub" x="24" y="151">Optional directional flag</text>
+    <text class="sub" x="24" y="178">Predicted 16-D latent</text>
+  </g>
+  <path class="arrow" d="M784 208H820"/>
+
+  <g transform="translate(828 105)">
+    <rect class="card" width="220" height="206" rx="18"/>
+    <circle cx="43" cy="45" r="23" fill="#493626"/>
+    <g fill="none" stroke="#ffbd7a" stroke-width="2"><ellipse cx="43" cy="45" rx="16" ry="8"/><ellipse cx="43" cy="45" rx="12" ry="15"/><path d="M27 45H59M43 29V61"/></g>
+    <text class="title" x="24" y="99">NDF decoder</text>
+    <text class="sub" x="24" y="128">Residual V3 · Zernike basis</text>
+    <text class="sub" x="24" y="151">Decode 16-D latent</text>
+    <text class="sub" x="24" y="178">Flattened 4096-value grid</text>
+  </g>
+  <path class="arrow" d="M1052 208H1088"/>
+
+  <g transform="translate(1096 105)">
+    <rect class="card" width="220" height="206" rx="18"/>
+    <circle cx="43" cy="45" r="23" fill="#332d42"/>
+    <rect x="27" y="29" width="32" height="32" rx="4" fill="#080d16"/>
+    <circle cx="43" cy="45" r="13" fill="url(#heat)" opacity=".45"/><circle cx="43" cy="45" r="6" fill="#fff0cc"/>
+    <text class="title" x="24" y="99">Material NDF</text>
+    <text class="sub" x="24" y="128">Reshape output to 64 × 64</text>
+    <text class="sub" x="24" y="151">Single-channel distribution</text>
+    <text class="sub" x="24" y="178">Not a complete PBR material</text>
+  </g>
+</svg>
