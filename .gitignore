@@ -153,6 +153,13 @@ activemq-data/
 .env
 .envrc
 .venv
+out/
+*.onnx
+*.onnx.data
+*.pt
+*.pth
+*.npz
+*.npy
 env/
 venv/
 ENV/
@@ -212,11 +219,21 @@ tempCodeRunnerFile.py
 dataset/raw/
 dataset/grid/
 dataset/augmented/
+dataset/augmented_lineage/
 dataset/.cache/
+dataset/experiments/
+
+# Generated model bundles and release archives
+model-bundles/
+release-assets/
+*.zip
 
 # Training artifacts and evaluation outputs
 checkpoints/
 results/
+
+# Local documentation and handoff notes (keep out of source commits)
+docs/
 
 # PyPI configuration file
 .pypirc
@@ -228,3 +245,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Documentation: keep out of Git history
+*.md
+*.rst
+*.adoc
+*.pdf
+AGENTS.md
+THIRD_PARTY_NOTICES
+*.doc
+*.docx
+*.odt
+*.rtf
+*.ppt
+*.pptx
+*.xls
+*.xlsx
