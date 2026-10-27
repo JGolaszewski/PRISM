@@ -1,0 +1,61 @@
+PRISM — third-party model and dataset notices
+
+This notice identifies upstream resources used to create the selected PRISM
+text-to-NDF models. The repository's Apache-2.0 license applies to PRISM code,
+not automatically to third-party assets or trained model files.
+
+1. E5-large-v2 text encoder
+   Project: intfloat/e5-large-v2
+   Source: https://huggingface.co/intfloat/e5-large-v2
+   License: MIT
+   Include the upstream MIT license and copyright notice with the encoder
+   weights and tokenizer. PRISM's ONNX graph adds masked mean pooling and L2
+   normalization around the pretrained encoder.
+
+2. MERL BRDF Database
+   Authors: Wojciech Matusik, Hanspeter Pfister, Matt Brand, Leonard McMillan
+   Source: https://www.merl.com/research/downloads/BRDF/
+   Dataset record: https://doi.org/10.5281/zenodo.8101681
+   License asserted for these training inputs: Creative Commons
+   Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+   License: https://creativecommons.org/licenses/by-sa/4.0/
+   Citation: W. Matusik, H. Pfister, M. Brand, and L. McMillan, “A Data-Driven
+   Reflectance Model,” ACM Transactions on Graphics 22(3), 2003,
+   https://doi.org/10.1145/882262.882343.
+   Changes: MERL BRDF measurements were converted into normalized 64×64
+   NDF-shaped proxies; the material dataset was used for VAE and text-model
+   training. The proxies are not claims of recovered physical NDFs.
+
+3. RGL Material Database
+   Source: https://rgl.epfl.ch/materials
+   Terms: CC0 unless a specific material is otherwise marked:
+   https://rgl.epfl.ch/pages/lab/material-database
+   Citation: J. Dupuy and W. Jakob, “An Adaptive Parameterization for
+   Efficient Material Acquisition and Rendering,” ACM Transactions on
+   Graphics (Proceedings of SIGGRAPH Asia), 2018.
+   Changes: selected RGB/spectral BRDF records were converted to normalized
+   64×64 NDF grids and used in model training/evaluation.
+
+4. PRISM-trained model assets
+   Assets: text prototype retriever and Residual V3 Zernike VAE decoder.
+   License designated for release: CC BY-SA 4.0, subject to the terms above.
+   Changes include BRDF-to-NDF proxy preprocessing, augmentation, model
+   training, and ONNX export. Keep the assets separately identified from
+   Apache-2.0 source code and MIT-licensed E5 files. Do not add technical or
+   contractual restrictions that conflict with CC BY-SA 4.0.
+
+5. Excluded experimental sources
+   DTU/Nielsen BRDF reconstructions: https://brdf.compute.dtu.dk/ — asks for
+   citation; no SPDX license is stated. Not used in the selected checkpoints.
+   Ngan et al. anisotropic BRDF data:
+   https://people.csail.mit.edu/addy/research/brdf/index.html — source notice
+   limits use to personal/classroom purposes and bars profit/direct commercial
+   advantage. Not used in the selected checkpoints.
+   Cornell Metal Appearance data:
+   https://www.cs.cornell.edu/projects/metalappearance/ — no explicit license
+   was identified in the source materials. Used only for external evaluation;
+   not used in the selected checkpoints or included in releases.
+   Urban Materials BRDF Database: https://doi.org/10.57745/WEZ8RL — Etalab
+   Open License 2.0, requiring attribution. Not used in selected checkpoints.
+   LUH ten-material BRDF dataset: https://doi.org/10.25835/aq5cdmx7 — CC BY
+   4.0. Not used in selected checkpoints.

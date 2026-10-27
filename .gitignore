@@ -261,3 +261,5 @@ THIRD_PARTY_NOTICES
 *.pptx
 *.xls
 *.xlsx
+!README.md
+!THIRD_PARTY_NOTICES
