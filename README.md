@@ -74,7 +74,7 @@ Use separate output directories so the 128 × 128 data and checkpoints do not ov
 ```powershell
 python -m prism.preprocess --grid-size 128 --output-dir dataset/grid128
 python -m prism.augment --grid-size 128 --input-dir dataset/grid128 --output-dir dataset/augmented128
-python -m prism.train --grid-size 128 --data-dir dataset/augmented128 --checkpoint-dir checkpoints/vae128
+python -m prism.train --grid-size 128 --data-dir dataset/augmented128 --checkpoint-dir checkpoints/vae128 --epochs 120 --batch-size 512 --lr 0.0003 --latent-dim 16 --beta 0.001 --poly-degree 8 --basis-type zernike --residual-decoder --residual-decoder-version 3 --peak-weight 30 --scheduler plateau --mse-weight 10 --seed 42
 python -m prism.validate --checkpoint checkpoints/vae128/best_model.pt --data-dir dataset/grid128 --output-dir results/eval128
 python -m prism.text_dataset --source grid --grid-dir dataset/grid128 --checkpoint checkpoints/vae128/best_model.pt --output-dir checkpoints/text128 --embedding-model intfloat/e5-large-v2
 python -m prism.train_text --data-cache checkpoints/text128/text_dataset_grid.npz --vae-checkpoint checkpoints/vae128/best_model.pt --checkpoint checkpoints/text128/best_text_model.pt

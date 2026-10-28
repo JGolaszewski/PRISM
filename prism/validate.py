@@ -47,9 +47,6 @@ def _load_model(
     num_poly_terms = int(
         checkpoint.get("num_poly_terms", (polynomial_degree + 1) * (polynomial_degree + 2) // 2)
     )
-    if grid_size != GRID_SIZE:
-        raise ValueError(f"Expected {GRID_SIZE}x{GRID_SIZE} checkpoint, got {grid_size}x{grid_size}")
-
     basis_type = checkpoint.get("basis_type")
     is_legacy_bernstein = basis_type is None and num_poly_terms == (polynomial_degree + 1) ** 2
     if basis_type == "tensor_product_bernstein" or is_legacy_bernstein:
