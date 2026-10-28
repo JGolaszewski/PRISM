@@ -321,7 +321,7 @@ def _run_epoch(
                 else latent_loss.new_zeros(())
             )
             control_loss = (
-                _decoded_control_loss(reconstructed_grid, control_features)
+                _decoded_control_loss(reconstructed_grid, control_features, grid_size)
                 if reconstructed_grid is not None and control_weight > 0 and control_features.shape[-1] >= 7
                 else latent_loss.new_zeros(())
             )
