@@ -18,21 +18,25 @@ GRID_VALUES = GRID_SIZE * GRID_SIZE
 class AugmentedNDFDataset(Dataset[torch.Tensor]):
     """Pack individual 64x64 grids into a reusable memory-mapped cache."""
 
-    def __init__(self, data_dir: str | Path, share_memory: bool = False) -> None:
+    def __init__(self, data_dir: str | Path, share_memory: bool = False, grid_size: int = GRID_SIZE) -> None:
+        if grid_size < 1:
+            raise ValueError("grid_size must be positive")
+        self.grid_size = grid_size
+        self.grid_values = grid_size * grid_size
         self.data_dir = Path(data_dir)
         self.files = sorted(self.data_dir.glob("*.npy"))
         if not self.files:
             raise FileNotFoundError(f"No .npy NDF grids found in {self.data_dir}")
 
         cache_dir = self.data_dir.parent / ".cache"
-        cache_path = cache_dir / f"{self.data_dir.name}_ndf64.npy"
+        cache_path = cache_dir / f"{self.data_dir.name}_ndf{grid_size}.npy"
         newest_input_ns = max(path.stat().st_mtime_ns for path in self.files)
         valid_cache = False
         if cache_path.is_file() and cache_path.stat().st_mtime_ns >= newest_input_ns:
             try:
                 cache = np.load(cache_path, mmap_mode="r", allow_pickle=False)
                 valid_cache = (
-                    cache.shape == (len(self.files), GRID_SIZE, GRID_SIZE)
+                    cache.shape == (len(self.files), grid_size, grid_size)
                     and cache.dtype == np.dtype(np.float32)
                 )
                 del cache
@@ -43,16 +47,15 @@ class AugmentedNDFDataset(Dataset[torch.Tensor]):
             self._build_cache(cache_path)
 
         self._cache = np.load(cache_path, mmap_mode="r+", allow_pickle=False)
-        flat_cache = self._cache.reshape(len(self.files), GRID_VALUES)
+        flat_cache = self._cache.reshape(len(self.files), self.grid_values)
         self.samples = torch.from_numpy(flat_cache)
         if share_memory:
             self.samples = self.samples.share_memory_()
 
-    @staticmethod
-    def _load_grid(path: Path) -> np.ndarray:
+    def _load_grid(self, path: Path) -> np.ndarray:
         array = np.load(path, allow_pickle=False)
-        if array.shape != (GRID_SIZE, GRID_SIZE):
-            raise ValueError(f"{path}: expected 64x64 grid, got {array.shape}")
+        if array.shape != (self.grid_size, self.grid_size):
+            raise ValueError(f"{path}: expected {self.grid_size}x{self.grid_size} grid, got {array.shape}")
         if not np.isfinite(array).all():
             raise ValueError(f"{path}: contains NaN or infinite values")
         if np.any(array < 0.0):
@@ -66,7 +69,7 @@ class AugmentedNDFDataset(Dataset[torch.Tensor]):
             temporary_path,
             mode="w+",
             dtype=np.float32,
-            shape=(len(self.files), GRID_SIZE, GRID_SIZE),
+            shape=(len(self.files), self.grid_size, self.grid_size),
         )
         worker_count = min(len(self.files), max(4, min(16, os.cpu_count() or 4)))
         try:

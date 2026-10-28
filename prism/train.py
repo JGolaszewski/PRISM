@@ -182,6 +182,7 @@ def _checkpoint_state(
     basis_type: str,
     residual_decoder: bool,
     residual_decoder_version: int,
+    grid_size: int,
 ) -> dict[str, Any]:
     return {
         "epoch": epoch,
@@ -191,7 +192,7 @@ def _checkpoint_state(
         "train_loss_history": train_history,
         "validation_loss_history": validation_history,
         "best_validation_loss": best_validation_loss,
-        "grid_size": GRID_SIZE,
+        "grid_size": grid_size,
         "polynomial_degree": polynomial_degree,
         "basis_type": basis_type,
         "latent_dim": latent_dim,
@@ -285,6 +286,7 @@ def train_ndf_vae(
     residual_decoder: bool = False,
     residual_decoder_version: int = 3,
     initialize_from: Path | None = None,
+    grid_size: int = GRID_SIZE,
 ) -> NDFPolynomialVAE:
     if epochs < 1:
         raise ValueError("epochs must be at least 1")
@@ -324,7 +326,7 @@ def train_ndf_vae(
 
     # Cache once, then keep the compact 500 MB grid tensor on the GPU for all
     # epochs. This avoids per-batch disk, multiprocessing, and PCIe overhead.
-    dataset = AugmentedNDFDataset(data_dir)
+    dataset = AugmentedNDFDataset(data_dir, grid_size=grid_size)
     sample_count = len(dataset)
     if sample_count < 2:
         raise ValueError("At least two NDF grids are required for training")
@@ -359,9 +361,9 @@ def train_ndf_vae(
 
     # Construct once before epoch/batch loops and retain on the selected device.
     basis = (
-        create_grid_zernike_basis(GRID_SIZE, polynomial_degree)
+        create_grid_zernike_basis(grid_size, polynomial_degree)
         if basis_type == "zernike"
-        else create_polynomial_basis(grid_size=GRID_SIZE, degree=polynomial_degree)
+        else create_polynomial_basis(grid_size=grid_size, degree=polynomial_degree)
     ).to(device)
     coefficient_degree_weights = torch.tensor(
         [
@@ -373,7 +375,7 @@ def train_ndf_vae(
         device=device,
     )
     model = NDFPolynomialVAE(
-        input_grid_size=GRID_SIZE,
+        input_grid_size=grid_size,
         num_poly_terms=basis.shape[0],
         latent_dim=latent_dim,
         # Zernike polynomials are signed. Their coefficients must also be
@@ -474,6 +476,7 @@ def train_ndf_vae(
             basis_type,
             residual_decoder,
             residual_decoder_version,
+            grid_size,
         )
         state["learning_rate"] = learning_rate
         state["scheduler"] = scheduler
@@ -509,6 +512,7 @@ def train_ndf_vae(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
+    parser.add_argument("--grid-size", type=int, choices=(64, 128), default=GRID_SIZE)
     parser.add_argument("--checkpoint-dir", type=Path, default=DEFAULT_CHECKPOINT_DIR)
     parser.add_argument("--epochs", type=int, default=120)
     parser.add_argument("--batch-size", type=int, default=2048)
@@ -565,6 +569,7 @@ def main() -> int:
             residual_decoder=args.residual_decoder,
             residual_decoder_version=args.residual_decoder_version,
             initialize_from=args.initialize_from,
+            grid_size=args.grid_size,
         )
     except Exception as exc:
         parser.exit(1, f"Training failed: {exc}\n")

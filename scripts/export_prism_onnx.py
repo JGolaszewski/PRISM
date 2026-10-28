@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import argparse
 import sys
 from pathlib import Path
 
@@ -110,12 +111,18 @@ def metrics(reference: np.ndarray, actual: np.ndarray) -> dict[str, float]:
 
 
 def main() -> None:
-    if not TEXT_CHECKPOINT.is_file():
-        raise FileNotFoundError(f"Text checkpoint not found: {TEXT_CHECKPOINT}")
-    if not VAE_CHECKPOINT.is_file():
-        raise FileNotFoundError(f"VAE checkpoint not found: {VAE_CHECKPOINT}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--vae-checkpoint", type=Path, default=VAE_CHECKPOINT)
+    parser.add_argument("--text-checkpoint", type=Path, default=TEXT_CHECKPOINT)
+    parser.add_argument("--output-dir", type=Path, default=ROOT / "out/prism_models")
+    args = parser.parse_args()
+    vae_checkpoint, text_checkpoint = args.vae_checkpoint, args.text_checkpoint
+    if not text_checkpoint.is_file():
+        raise FileNotFoundError(f"Text checkpoint not found: {text_checkpoint}")
+    if not vae_checkpoint.is_file():
+        raise FileNotFoundError(f"VAE checkpoint not found: {vae_checkpoint}")
 
-    out = ROOT / "out/prism_models"
+    out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
     device = torch.device("cpu")
 
@@ -128,7 +135,7 @@ def main() -> None:
                 ["input_ids", "attention_mask"], ["normalized_embedding"])
     tokenizer.save_pretrained(out / "tokenizer")
 
-    predictor, text_meta = _load_predictor(TEXT_CHECKPOINT, device)
+    predictor, text_meta = _load_predictor(text_checkpoint, device)
     if not hasattr(predictor, "prototype_embeddings"):
         raise TypeError("Selected checkpoint is not the expected similarity retriever")
     retriever = RetrieverExport(predictor).eval()
@@ -137,7 +144,7 @@ def main() -> None:
     export_onnx(retriever, (embedding_example, direction_example), out / "retriever.onnx",
                 ["embedding", "directional"], ["predicted_latent"])
 
-    vae, basis, vae_meta = _load_model(VAE_CHECKPOINT, device)
+    vae, basis, vae_meta = _load_model(vae_checkpoint, device)
     decoder = DecoderExport(vae.eval(), basis).eval()
     latent_example = torch.zeros((1, vae.latent_dim), dtype=torch.float32)
     export_onnx(decoder, (latent_example,), out / "vae_decoder.onnx",
@@ -196,8 +203,8 @@ def main() -> None:
     report = {
         "model_id": MODEL_ID,
         "sequence_length": SEQUENCE_LENGTH,
-        "text_checkpoint": str(TEXT_CHECKPOINT.relative_to(ROOT)),
-        "vae_checkpoint": str(VAE_CHECKPOINT.relative_to(ROOT)),
+        "text_checkpoint": str(text_checkpoint),
+        "vae_checkpoint": str(vae_checkpoint),
         "retriever": {
             "neighbors": predictor.neighbors,
             "temperature": predictor.temperature,

@@ -224,7 +224,8 @@ def evaluate_text(
 
     embeddings = torch.from_numpy(data["embeddings"].astype(np.float32, copy=False)[test_idx])
     targets = torch.from_numpy(data["latents"].astype(np.float32, copy=False)[test_idx])
-    grids = torch.from_numpy(data["grids"].astype(np.float32, copy=False)[test_idx].reshape(-1, 4096))
+    grid_values = int(vae.input_grid_size) ** 2
+    grids = torch.from_numpy(data["grids"].astype(np.float32, copy=False)[test_idx].reshape(-1, grid_values))
     if predictor.profile_dim:
         if "profile_features" in data:
             profile_features = torch.from_numpy(

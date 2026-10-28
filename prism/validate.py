@@ -300,6 +300,9 @@ def validate(
     batch_size: int = DEFAULT_BATCH_SIZE,
     seed: int = 42,
 ) -> dict[str, float | int]:
+    global GRID_SIZE
+    metadata = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    GRID_SIZE = int(metadata.get("grid_size", GRID_SIZE))
     if num_samples < 1:
         raise ValueError("num_samples must be at least 1")
     if interp_steps < 2:
@@ -312,7 +315,7 @@ def validate(
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     device = select_device()
-    dataset = AugmentedNDFDataset(data_dir)
+    dataset = AugmentedNDFDataset(data_dir, grid_size=GRID_SIZE)
     if len(dataset) < 2:
         raise ValueError("At least two NDF grids are needed for interpolation")
     model, basis, checkpoint = _load_model(checkpoint_path, device)

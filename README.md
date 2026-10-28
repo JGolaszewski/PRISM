@@ -67,6 +67,26 @@ python -m prism.infer_text --prompt "brushed aluminum" --output results/brushed_
 
 These commands illustrate the development pipeline. Retraining does not necessarily reproduce the selected release bit-for-bit; model downloads may require Hugging Face access the first time.
 
+### Retrain a 128 × 128 model
+
+Use separate output directories so the 128 × 128 data and checkpoints do not overwrite the 64 × 64 artifacts:
+
+```powershell
+python -m prism.preprocess --grid-size 128 --output-dir dataset/grid128
+python -m prism.augment --grid-size 128 --input-dir dataset/grid128 --output-dir dataset/augmented128
+python -m prism.train --grid-size 128 --data-dir dataset/augmented128 --checkpoint-dir checkpoints/vae128
+python -m prism.validate --checkpoint checkpoints/vae128/best_model.pt --data-dir dataset/grid128 --output-dir results/eval128
+python -m prism.text_dataset --source grid --grid-dir dataset/grid128 --checkpoint checkpoints/vae128/best_model.pt --output-dir checkpoints/text128 --embedding-model intfloat/e5-large-v2
+python -m prism.train_text --data-cache checkpoints/text128/text_dataset_grid.npz --vae-checkpoint checkpoints/vae128/best_model.pt --checkpoint checkpoints/text128/best_text_model.pt
+python -m prism.eval_text --data-cache checkpoints/text128/text_dataset_grid.npz --vae-checkpoint checkpoints/vae128/best_model.pt --text-checkpoint checkpoints/text128/best_text_model.pt
+```
+
+The VAE checkpoint records its grid size. Text cache generation, training, evaluation, validation, and ONNX export use that checkpoint metadata to preserve the matching grid dimensions. Export the trained VAE and text model with:
+
+```powershell
+python scripts/export_prism_onnx.py --vae-checkpoint checkpoints/vae128/best_model.pt --text-checkpoint checkpoints/text128/best_text_model.pt --output-dir out/prism_models128
+```
+
 ## Export ONNX models
 
 Install the export-only packages and run the exporter:

@@ -678,6 +678,9 @@ def build_text_dataset(
         )
     if include_profile_stats and caption_count != MAX_GRID_CAPTIONS_PER_SAMPLE:
         raise ValueError("include_profile_stats requires caption_count=10")
+    global GRID_SIZE
+    checkpoint_metadata = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    GRID_SIZE = int(checkpoint_metadata.get("grid_size", GRID_SIZE))
     target_device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     paths, sources = collect_samples(source, grid_dir, augmented_dir)
     grids_np = np.stack([_load_grid(path) for path in paths])
