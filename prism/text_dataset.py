@@ -35,13 +35,21 @@ DEFAULT_CHECKPOINT = REPO_ROOT / "checkpoints" / "zernike_residual_v3_warm_plate
 DEFAULT_GRID_DIR = REPO_ROOT / "dataset" / "grid"
 DEFAULT_AUGMENTED_DIR = REPO_ROOT / "dataset" / "augmented"
 RGL_METADATA_PATH = Path(__file__).with_name("rgl_material_metadata.json")
-RGL_METADATA = json.loads(RGL_METADATA_PATH.read_text(encoding="utf-8"))["records"]
 DTU_METADATA_PATH = Path(__file__).with_name("dtu_nielsen_material_metadata.json")
-DTU_METADATA = json.loads(DTU_METADATA_PATH.read_text(encoding="utf-8"))["records"]
 NGAN_METADATA_PATH = Path(__file__).with_name("ngan_anisotropic_material_metadata.json")
-NGAN_METADATA = json.loads(NGAN_METADATA_PATH.read_text(encoding="utf-8"))["records"]
 URBAN_METADATA_PATH = Path(__file__).with_name("urban_brdf_material_metadata.json")
-URBAN_METADATA = json.loads(URBAN_METADATA_PATH.read_text(encoding="utf-8"))["records"]
+
+
+def _load_metadata_records(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    return json.loads(path.read_text(encoding="utf-8"))["records"]
+
+
+RGL_METADATA = _load_metadata_records(RGL_METADATA_PATH)
+DTU_METADATA = _load_metadata_records(DTU_METADATA_PATH)
+NGAN_METADATA = _load_metadata_records(NGAN_METADATA_PATH)
+URBAN_METADATA = _load_metadata_records(URBAN_METADATA_PATH)
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "checkpoints"
 DEFAULT_EMBEDDING_MODEL = "intfloat/e5-large-v2"
 GRID_SIZE = 64
