@@ -29,6 +29,8 @@ from prism.infer_text import (  # noqa: E402
     _load_predictor,
     DEFAULT_INFERENCE_CHECKPOINT,
 )
+from prism.text_dataset import parse_profile_features, parse_prompt_controls  # noqa: E402
+from prism.text_model import SimilarityLatentRetriever, TextToLatent  # noqa: E402
 from prism.validate import _load_model  # noqa: E402
 
 TEXT_CHECKPOINT = DEFAULT_INFERENCE_CHECKPOINT
@@ -77,6 +79,52 @@ class RetrieverExport(nn.Module):
         weights = torch.softmax((top_scores - top_scores.amax(dim=-1, keepdim=True)) / self.temperature, dim=-1)
         neighbors = self.prototype_latents[indices]
         return (neighbors * weights.unsqueeze(-1)).sum(dim=1)
+
+
+class TextPredictorExportWithControls(nn.Module):
+    """Concrete two-input wrapper for MLPs trained with control features only."""
+
+    def __init__(self, predictor: TextToLatent) -> None:
+        super().__init__()
+        self.predictor = predictor
+
+    def forward(self, embedding: torch.Tensor, control_features: torch.Tensor) -> torch.Tensor:
+        return self.predictor(embedding, control_features=control_features)
+
+
+class TextPredictorExportWithProfiles(nn.Module):
+    """Concrete two-input wrapper for MLPs trained with profile features only."""
+
+    def __init__(self, predictor: TextToLatent) -> None:
+        super().__init__()
+        self.predictor = predictor
+
+    def forward(self, embedding: torch.Tensor, profile_features: torch.Tensor) -> torch.Tensor:
+        return self.predictor(embedding, profile_features=profile_features)
+
+
+class TextPredictorExportEmbeddingOnly(nn.Module):
+    """Concrete one-input wrapper for plain embedding-to-latent MLPs."""
+
+    def __init__(self, predictor: TextToLatent) -> None:
+        super().__init__()
+        self.predictor = predictor
+
+    def forward(self, embedding: torch.Tensor) -> torch.Tensor:
+        return self.predictor(embedding)
+
+
+class TextPredictorExportWithProfilesAndControls(nn.Module):
+    """Concrete three-input wrapper for MLPs using both feature families."""
+
+    def __init__(self, predictor: TextToLatent) -> None:
+        super().__init__()
+        self.predictor = predictor
+
+    def forward(
+        self, embedding: torch.Tensor, profile_features: torch.Tensor, control_features: torch.Tensor
+    ) -> torch.Tensor:
+        return self.predictor(embedding, profile_features, control_features)
 
 
 class DecoderExport(nn.Module):
@@ -136,13 +184,43 @@ def main() -> None:
     tokenizer.save_pretrained(out / "tokenizer")
 
     predictor, text_meta = _load_predictor(text_checkpoint, device)
-    if not hasattr(predictor, "prototype_embeddings"):
-        raise TypeError("Selected checkpoint is not the expected similarity retriever")
-    retriever = RetrieverExport(predictor).eval()
     embedding_example = torch.zeros((1, predictor.embedding_dim), dtype=torch.float32)
-    direction_example = torch.zeros((1,), dtype=torch.bool)
-    export_onnx(retriever, (embedding_example, direction_example), out / "retriever.onnx",
-                ["embedding", "directional"], ["predicted_latent"])
+    directional_retrieval = isinstance(predictor, SimilarityLatentRetriever)
+    predictor_input_names = ["embedding"]
+    predictor_inputs: list[torch.Tensor] = [embedding_example]
+    if directional_retrieval:
+        predictor_export = RetrieverExport(predictor).eval()
+        predictor_input_names.append("directional")
+        predictor_inputs.append(torch.zeros((1,), dtype=torch.bool))
+    else:
+        if not isinstance(predictor, TextToLatent):
+            raise TypeError(f"Unsupported text predictor type: {type(predictor).__name__}")
+        profile_example = (
+            torch.zeros((1, predictor.profile_dim), dtype=torch.float32)
+            if predictor.profile_dim else None
+        )
+        control_example = (
+            torch.zeros((1, predictor.control_dim), dtype=torch.float32)
+            if predictor.control_dim else None
+        )
+        if profile_example is not None:
+            predictor_input_names.append("profile_features")
+            predictor_inputs.append(profile_example)
+        if control_example is not None:
+            predictor_input_names.append("control_features")
+            predictor_inputs.append(control_example)
+        if profile_example is not None and control_example is not None:
+            predictor_export = TextPredictorExportWithProfilesAndControls(predictor).eval()
+        elif profile_example is not None:
+            predictor_export = TextPredictorExportWithProfiles(predictor).eval()
+        elif control_example is not None:
+            predictor_export = TextPredictorExportWithControls(predictor).eval()
+        else:
+            predictor_export = TextPredictorExportEmbeddingOnly(predictor).eval()
+    export_onnx(
+        predictor_export, tuple(predictor_inputs), out / "retriever.onnx",
+        predictor_input_names, ["predicted_latent"],
+    )
 
     vae, basis, vae_meta = _load_model(vae_checkpoint, device)
     decoder = DecoderExport(vae.eval(), basis).eval()
@@ -155,6 +233,7 @@ def main() -> None:
     e5_session = ort.InferenceSession(str(out / "e5_encoder.onnx"), providers=["CPUExecutionProvider"])
     retrieval_session = ort.InferenceSession(str(out / "retriever.onnx"), providers=["CPUExecutionProvider"])
     decoder_session = ort.InferenceSession(str(out / "vae_decoder.onnx"), providers=["CPUExecutionProvider"])
+    grid_size = int(vae.input_grid_size)
     comparisons: dict[str, dict[str, dict[str, float]]] = {}
 
     for prompt in PROMPTS:
@@ -175,42 +254,66 @@ def main() -> None:
             "attention_mask": mask.numpy(),
         })[0]
 
-        directional = torch.tensor([is_directional], dtype=torch.bool)
+        profile_features = (
+            torch.from_numpy(parse_profile_features(prompt)).unsqueeze(0)
+            if getattr(predictor, "profile_dim", 0) else None
+        )
+        control_features = None
+        if getattr(predictor, "control_dim", 0):
+            if directional_retrieval:
+                control_features = torch.tensor([is_directional], dtype=torch.bool)
+            else:
+                control_features = torch.from_numpy(parse_prompt_controls(prompt)).unsqueeze(0).float()
         with torch.inference_mode():
-            py_latent = predictor(torch.from_numpy(py_embedding), control_features=directional).cpu().numpy()
-        ort_latent = retrieval_session.run(None, {
-            "embedding": ort_embedding,
-            "directional": directional.numpy(),
-        })[0]
+            py_latent = predictor(
+                torch.from_numpy(py_embedding), profile_features, control_features
+            ).cpu().numpy()
+        predictor_feed = {"embedding": ort_embedding}
+        if directional_retrieval:
+            predictor_feed["directional"] = control_features.numpy()
+        else:
+            if profile_features is not None:
+                predictor_feed["profile_features"] = profile_features.numpy()
+            if control_features is not None:
+                predictor_feed["control_features"] = control_features.numpy()
+        ort_latent = retrieval_session.run(None, predictor_feed)[0]
 
         with torch.inference_mode():
             py_grid = decoder(torch.from_numpy(py_latent)).cpu().numpy()
         ort_grid = decoder_session.run(None, {"latent": ort_latent})[0]
-        if is_directional:
-            py_grid = _recenter_ndf_batch(torch.from_numpy(py_grid.reshape(1, 64, 64)))[0].numpy().reshape(1, -1)
-            ort_grid = _recenter_ndf_batch(torch.from_numpy(ort_grid.reshape(1, 64, 64)))[0].numpy().reshape(1, -1)
+        recenter = directional_retrieval and is_directional
+        if recenter:
+            py_grid = _recenter_ndf_batch(torch.from_numpy(py_grid.reshape(1, grid_size, grid_size)))[0].numpy().reshape(1, -1)
+            ort_grid = _recenter_ndf_batch(torch.from_numpy(ort_grid.reshape(1, grid_size, grid_size)))[0].numpy().reshape(1, -1)
 
         comparisons[prompt] = {
-            "directional_correction_applied": is_directional,
+            "directional_correction_applied": recenter,
             "embedding": metrics(py_embedding, ort_embedding),
             "latent": metrics(py_latent, ort_latent),
             "ndf": metrics(py_grid, ort_grid),
         }
         # Keep the exact reference/ORT arrays for downstream C++ smoke tests.
-        np.save(out / f"{_slug(prompt)}_python_ndf.npy", py_grid.reshape(64, 64).astype(np.float32))
-        np.save(out / f"{_slug(prompt)}_onnx_ndf.npy", ort_grid.reshape(64, 64).astype(np.float32))
+        np.save(out / f"{_slug(prompt)}_python_ndf.npy", py_grid.reshape(grid_size, grid_size).astype(np.float32))
+        np.save(out / f"{_slug(prompt)}_onnx_ndf.npy", ort_grid.reshape(grid_size, grid_size).astype(np.float32))
 
     report = {
         "model_id": MODEL_ID,
         "sequence_length": SEQUENCE_LENGTH,
         "text_checkpoint": str(text_checkpoint),
         "vae_checkpoint": str(vae_checkpoint),
-        "retriever": {
+        "text_predictor": ({
+            "type": "e5_similarity_retrieval",
             "neighbors": predictor.neighbors,
             "temperature": predictor.temperature,
             "directional_threshold": predictor.directional_threshold,
             "prototype_count": int(predictor.prototype_embeddings.shape[0]),
-        },
+        } if directional_retrieval else {
+            "type": "text_to_latent_mlp",
+            "profile_dim": predictor.profile_dim,
+            "control_dim": predictor.control_dim,
+            "hidden_dims": list(predictor.hidden_dims),
+            "architecture_version": predictor.architecture_version,
+        }),
         "vae": {
             "latent_dim": vae.latent_dim,
             "grid_size": vae.input_grid_size,
@@ -218,7 +321,10 @@ def main() -> None:
             "residual_decoder_version": vae_meta.get("residual_decoder_version"),
         },
         "text_checkpoint_metadata": {
-            key: text_meta.get(key) for key in ("embedding_model", "predictor_type", "neighbors", "temperature")
+            key: text_meta.get(key) for key in (
+                "embedding_model", "predictor_type", "neighbors", "temperature",
+                "control_dim", "profile_dim", "validation_latent_mse",
+            )
         },
         "providers": {"encoder": e5_session.get_providers(), "retriever": retrieval_session.get_providers(), "decoder": decoder_session.get_providers()},
         "comparisons": comparisons,

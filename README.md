@@ -87,6 +87,8 @@ The VAE checkpoint records its grid size. Text cache generation, training, evalu
 python scripts/export_prism_onnx.py --vae-checkpoint checkpoints/vae128/best_model.pt --text-checkpoint checkpoints/text128/best_text_model.pt --output-dir out/prism_models128
 ```
 
+The export includes the matching VAE decoder, latent predictor, and a parity report with grid and input metadata. The latent predictor graph supports both trained text-to-latent MLP checkpoints and similarity-retrieval checkpoints. E5 encoder and tokenizer files are also written locally; distribute those through the separately licensed [E5 release](https://github.com/JGolaszewski/PRISM/releases/tag/e5-onnx-v1.0.0).
+
 ## Export ONNX models
 
 Install the export-only packages and run the exporter:
