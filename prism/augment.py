@@ -16,7 +16,7 @@ DEFAULT_OUTPUT = REPO_ROOT / "dataset" / "augmented"
 GRID_SIZE = 64
 
 
-def load_materials(input_dir: Path) -> tuple[list[Path], np.ndarray]:
+def load_materials(input_dir: Path, grid_size: int = GRID_SIZE) -> tuple[list[Path], np.ndarray]:
     """Load all valid 64x64 MERL/RGL grids into a compact float32 array."""
     paths = sorted(
         path
@@ -29,8 +29,8 @@ def load_materials(input_dir: Path) -> tuple[list[Path], np.ndarray]:
     grids = []
     for path in paths:
         grid = np.load(path, allow_pickle=False)
-        if grid.shape != (GRID_SIZE, GRID_SIZE):
-            raise ValueError(f"{path}: expected a 64x64 grid, got {grid.shape}")
+        if grid.shape != (grid_size, grid_size):
+            raise ValueError(f"{path}: expected a {grid_size}x{grid_size} grid, got {grid.shape}")
         if not np.isfinite(grid).all():
             raise ValueError(f"{path}: contains NaN or infinite values")
         if np.any(grid < 0):
@@ -89,6 +89,7 @@ def augment_one(
     disk_mask: np.ndarray,
     *,
     return_indices: bool = False,
+    grid_size: int = GRID_SIZE,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Blend 2-3 materials and optionally return their selected row indices."""
     count = int(rng.integers(2, 4))
@@ -106,8 +107,8 @@ def augment_one(
     source_y = (-sine * x + cosine * y) / roughness_scale
 
     # Grid pixel centers span [-1, 1]; convert disk coordinates back to pixels.
-    source_col = (source_x + 1.0) * ((GRID_SIZE - 1) / 2.0)
-    source_row = (source_y + 1.0) * ((GRID_SIZE - 1) / 2.0)
+    source_col = (source_x + 1.0) * ((grid_size - 1) / 2.0)
+    source_row = (source_y + 1.0) * ((grid_size - 1) / 2.0)
     warped = _bilinear_sample(blended, source_col, source_row)
     warped *= 1.0 / (roughness_scale**2)
 
@@ -127,16 +128,17 @@ def generate_dataset(
     num_samples: int = 30_000,
     seed: int | None = None,
     record_lineage: bool = True,
+    grid_size: int = GRID_SIZE,
 ) -> int:
     if num_samples < 1:
         raise ValueError("num_samples must be at least 1")
 
-    paths, materials = load_materials(input_dir)
+    paths, materials = load_materials(input_dir, grid_size)
     if materials.shape[0] < 3:
         raise ValueError("At least three base material grids are required")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    coords = np.linspace(-1.0, 1.0, GRID_SIZE, dtype=np.float64)
+    coords = np.linspace(-1.0, 1.0, grid_size, dtype=np.float64)
     x, y = np.meshgrid(coords, coords, indexing="xy")
     disk_mask = x * x + y * y <= 1.0
     rng = np.random.default_rng(seed)
@@ -145,10 +147,10 @@ def generate_dataset(
     for sample_index in tqdm(range(num_samples), desc="Augmenting NDFs", unit="sample"):
         if record_lineage:
             sample, source_indices = augment_one(
-                materials, rng, x, y, disk_mask, return_indices=True
+                materials, rng, x, y, disk_mask, return_indices=True, grid_size=grid_size
             )
         else:
-            sample = augment_one(materials, rng, x, y, disk_mask)
+            sample = augment_one(materials, rng, x, y, disk_mask, grid_size=grid_size)
         path = output_dir / f"aug_sample_{sample_index:05d}.npy"
         np.save(path, sample, allow_pickle=False)
         if record_lineage:
@@ -168,6 +170,7 @@ def main() -> int:
         "--num-samples", type=int, default=30_000,
         help="Number of augmented grids to generate (default: 30000).",
     )
+    parser.add_argument("--grid-size", type=int, choices=(64, 128), default=GRID_SIZE)
     parser.add_argument(
         "--input-dir", type=Path, default=DEFAULT_INPUT,
         help="Directory containing the preprocessed 64x64 NDF grids.",
@@ -187,6 +190,7 @@ def main() -> int:
         material_count = generate_dataset(
             args.input_dir, args.output_dir, args.num_samples, args.seed,
             record_lineage=not args.no_lineage,
+            grid_size=args.grid_size,
         )
     except Exception as exc:
         parser.exit(1, f"Augmentation failed: {exc}\n")

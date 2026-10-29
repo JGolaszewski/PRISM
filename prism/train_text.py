@@ -43,8 +43,8 @@ def _load_artifact(path: Path) -> dict[str, np.ndarray]:
             raise ValueError(f"{key} must have first dimension N={n}")
     if data["embeddings"].ndim != 2 or data["latents"].ndim != 2:
         raise ValueError("embeddings and latents must be rank-2 [N, D/L] arrays")
-    if data["grids"].shape not in ((n, 4096), (n, 64, 64)):
-        raise ValueError(f"grids must have shape [N,4096] or [N,64,64], got {data['grids'].shape}")
+    if data["grids"].ndim not in (2, 3) or (data["grids"].ndim == 3 and data["grids"].shape[1] != data["grids"].shape[2]):
+        raise ValueError(f"grids must be flattened or square [N,H,W], got {data['grids'].shape}")
     for key in ("material_ids", "material_names", "source_paths"):
         if data[key].ndim == 0 or len(data[key]) != n:
             raise ValueError(f"{key} must have length N={n}")
@@ -272,6 +272,7 @@ def _run_epoch(
     peak_weight: float,
     tv_weight: float,
     control_weight: float,
+    grid_size: int,
 ) -> dict[str, float]:
     training = optimizer is not None
     predictor.train(training)
@@ -315,12 +316,12 @@ def _run_epoch(
                 else latent_loss.new_zeros(())
             )
             tv_loss = (
-                _valid_disk_tv(reconstructed_grid)
+                _valid_disk_tv(reconstructed_grid, grid_size)
                 if reconstructed_grid is not None and tv_weight > 0
                 else latent_loss.new_zeros(())
             )
             control_loss = (
-                _decoded_control_loss(reconstructed_grid, control_features)
+                _decoded_control_loss(reconstructed_grid, control_features, grid_size)
                 if reconstructed_grid is not None and control_weight > 0 and control_features.shape[-1] >= 7
                 else latent_loss.new_zeros(())
             )
@@ -526,15 +527,17 @@ def train_text(
         raise ValueError(
             f"artifact latent width {data['latents'].shape[1]} does not match VAE latent_dim {latent_dim}"
         )
-    if data["grids"].shape[1:] not in ((4096,), (64, 64)):
-        raise ValueError("expected 64x64 grids")
+    grid_size = vae.input_grid_size
+    expected_values = grid_size * grid_size
+    if int(np.prod(data["grids"].shape[1:])) != expected_values:
+        raise ValueError(f"expected {grid_size}x{grid_size} grids")
     for parameter in vae.parameters():
         parameter.requires_grad_(False)
     vae.eval()
 
     embeddings = torch.from_numpy(data["embeddings"].astype(np.float32, copy=False))
     latents = torch.from_numpy(data["latents"].astype(np.float32, copy=False))
-    grids = torch.from_numpy(data["grids"].astype(np.float32, copy=False).reshape(-1, 4096))
+    grids = torch.from_numpy(data["grids"].astype(np.float32, copy=False).reshape(-1, expected_values))
     profile_features = torch.from_numpy(data["profile_features"].astype(np.float32, copy=False))
     control_features = torch.from_numpy(data["control_features"].astype(np.float32, copy=False))
     training_only_tensors = []
@@ -546,8 +549,8 @@ def train_text(
             raise ValueError("training-only cache latent width does not match the VAE")
         if item["embeddings"].shape[1] != data["embeddings"].shape[1]:
             raise ValueError("training-only cache embedding width does not match the named cache")
-        if item["grids"].shape[1:] not in ((4096,), (64, 64)):
-            raise ValueError("expected 64x64 grids in training-only cache")
+        if int(np.prod(item["grids"].shape[1:])) != expected_values:
+            raise ValueError(f"expected {grid_size}x{grid_size} grids in training-only cache")
         aux_profiles = item.get("profile_features")
         if profile_dim:
             if aux_profiles is None:
@@ -577,7 +580,7 @@ def train_text(
                 control_validation_tensors.append((
                     torch.from_numpy(item["embeddings"][control_validation_keep].astype(np.float32, copy=False)),
                     torch.from_numpy(item["latents"][control_validation_keep].astype(np.float32, copy=False)),
-                    torch.from_numpy(item["grids"][control_validation_keep].astype(np.float32, copy=False).reshape(-1, 4096)),
+                    torch.from_numpy(item["grids"][control_validation_keep].astype(np.float32, copy=False).reshape(-1, expected_values)),
                     torch.from_numpy(aux_profiles[control_validation_keep].astype(np.float32, copy=False)),
                     torch.from_numpy(aux_controls[control_validation_keep].astype(np.float32, copy=False)),
                 ))
@@ -598,7 +601,7 @@ def train_text(
         training_only_tensors.append((
             torch.from_numpy(item["embeddings"][keep].astype(np.float32, copy=False)),
             torch.from_numpy(item["latents"][keep].astype(np.float32, copy=False)),
-            torch.from_numpy(item["grids"][keep].astype(np.float32, copy=False).reshape(-1, 4096)),
+            torch.from_numpy(item["grids"][keep].astype(np.float32, copy=False).reshape(-1, expected_values)),
             torch.from_numpy(aux_profiles[keep].astype(np.float32, copy=False)),
             torch.from_numpy(aux_controls[keep].astype(np.float32, copy=False)),
         ))
@@ -720,19 +723,19 @@ def train_text(
         train_metrics = _run_epoch(
             predictor, vae, basis, train_loader, device, optimizer,
             latent_weight, cosine_weight, reconstruction_weight, magnitude_weight,
-            peak_weight, tv_weight, control_weight,
+            peak_weight, tv_weight, control_weight, grid_size,
         )
         val_metrics = _run_epoch(
             predictor, vae, basis, val_loader, device, None,
             latent_weight, cosine_weight, reconstruction_weight, magnitude_weight,
-            peak_weight, tv_weight, control_weight,
+            peak_weight, tv_weight, control_weight, grid_size,
         )
         control_val_metrics = None
         if control_validation_loader is not None:
             control_val_metrics = _run_epoch(
                 predictor, vae, basis, control_validation_loader, device, None,
                 latent_weight, cosine_weight, reconstruction_weight, magnitude_weight,
-                peak_weight, tv_weight, control_weight,
+                peak_weight, tv_weight, control_weight, grid_size,
             )
         scheduler.step(epoch)
         row = {
@@ -839,7 +842,7 @@ def train_text(
         test_metrics = _run_epoch(
             predictor, vae, basis, test_loader, device, None,
             latent_weight, cosine_weight, reconstruction_weight, magnitude_weight,
-            peak_weight, tv_weight, control_weight,
+            peak_weight, tv_weight, control_weight, grid_size,
         )
         best_state["test_latent_mse"] = test_metrics["latent_mse"]
         best_state["test_cosine_loss"] = test_metrics["cosine_loss"]
